@@ -18,11 +18,15 @@ The release target is deliberately strict:
 ## Why a new repository
 
 [`blobfishai/salesforce-grok`](https://github.com/blobfishai/salesforce-grok)
-contains valuable CRM world research, CRMArena reproduction work, deterministic
-state verifiers, and historical frontier runs. It also contains 7.8 GB of
-experimental worlds and traces, only 20 suite-of-record sales tasks, and no Gong
-or HubSpot MCP contract. SalesBench-100 reuses the validated methodology while
-shipping a clean, reproducible multi-vendor benchmark.
+is the broad capability-world predecessor: its live synthetic enterprise world
+has 339 tables, 597 tools, 66 tasks and verifiers, eleven vendor endpoints,
+deterministic VCode grading, and hundreds of frontier-run traces. SalesBench-100
+reuses its strongest methods—vendor isolation, immutable provenance, exact
+state diffs, collateral-damage checks, and inspectable trajectories—but focuses
+the release on 100 hand-authored Salesforce + HubSpot + Gong workflows with a
+uniform 96-document, 163-call evaluation contract. The two repositories are
+complementary: one explores breadth and model frontiers; this one is the compact,
+portable public benchmark and dataset.
 
 ## Contract targets
 
@@ -47,3 +51,9 @@ python3 -m salesbench.run_suite
 Generated release artifacts are written to `dist/salesbench-100` and are not
 committed. All benchmark entities and content are synthetic.
 
+## Public release
+
+- Source: <https://github.com/blobfishai/sales-agent-simulation>
+- Harbor: <https://hub.harborframework.com/datasets/blobfishai/salesbench-100>
+- Hugging Face: <https://huggingface.co/datasets/SamuelChien821/salesbench-100>
+- Benchmark explorer: <https://blobfish.ai/benchmarks/salesbench-100>

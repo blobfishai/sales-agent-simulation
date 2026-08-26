@@ -1,122 +1,152 @@
-# SalesBench-100 — Release Qualification (bench/salesbench-100-release)
+# SalesBench-100 v1.0.1 — Release Qualification
 
-SalesBench-100 is a deterministic, long-horizon sales-agent benchmark: 100
-original revenue-operations tasks across four vendor-separated MCP surfaces
-(Salesforce, HubSpot, Gong, filesystem evidence room), built to
-CounselBench-100 release parity. Dataset name: `blobfishai/salesbench-100`;
-task ids `sb100-NNN-<slug>`; task names `blobfishai/sb100-NNN-<slug>`.
+SalesBench-100 is a deterministic, long-horizon sales-agent benchmark with
+100 original revenue-operations tasks across Salesforce, HubSpot, Gong, and a
+seeded filesystem evidence room. Task IDs are `sb100-NNN-<slug>` and Harbor
+task names are `blobfishai/sb100-NNN-<slug>`.
 
-## What was built
+## Public release
 
-- `salesbench/catalog.py` — 100 hand-authored business spines (10 workflow
-  families x 10), import-time validated.
-- `salesbench/generation.py` — deterministic expansion: per task 96 seeded
-  documents (24 md / 12 each txt, json, csv, eml, xml, html), 16 portfolio
-  entities (12 authorized changes + 4 controls), 48 distractor records, a
-  163-call reference trajectory, `changes.json` + `brief.md` gold deliverables,
-  and a verify-token digest.
-- `salesbench/runtime/world.py` — offline multi-server world: 35 tools
-  (filesystem 6, Salesforce 11, HubSpot 15, Gong 3 read-only), JSON state,
-  `trace.jsonl`, token-gated `verify()`.
-- `salesbench/runtime/scoring.py` — pure scoring: reward = 0.20 procedure +
-  0.45 state + 0.25 changes + 0.10 brief; caps 0.20 (deliverables missing or
-  not written through MCP) and 0.49 (procedure incomplete); floor: zero
-  successful MCP calls -> reward exactly 0.0.
-- `salesbench/runtime/server.py` — stdlib streamable-HTTP MCP server exposing
-  `/mcp/{filesystem,salesforce,hubspot,gong}` (four `[[environment.mcp_servers]]`
-  entries per task), `/health`, and token-gated `POST /verify`. No solve endpoint.
-- `salesbench/builder.py` — emits `dist/salesbench-100/`:
-  - `harbor/tasks/sb100-NNN-<slug>/` — Harbor schema 1.4 packs (task.toml,
-    instruction.md, environment with digest-pinned `python:3.12-slim` images
-    built from in-pack source, solution/solve.py replaying the exact oracle
-    trajectory over live MCP, tests/test.sh POSTing `/verify` and writing
-    `$HARBOR_LOGS|$VERIFIER_LOG_DIR/verifier/{report.json,reward.json,reward.txt}`).
-  - `harbor/dataset/dataset.toml` — `blobfishai/salesbench-100` with 100
-    `[[tasks]]` entries; per-task sha256 content digests replicate the Harbor
-    publisher packager algorithm (sorted relpath, `rel\0sha256\n` outer hash).
-  - `huggingface/` — `data/tasks.jsonl` (task_id, task_name, world_id, prompt,
-    context_files, rubric, gold_output, metadata with `grading:"deterministic"`,
-    `llm_judge:false`), per-task JSON, world source, per-task oracle trajectory
-    JSONL, reports, LICENSE-CODE (Apache-2.0), LICENSE-DATA (CC BY 4.0), card.
-- `salesbench/run_suite.py` — oracle x100, exact replay x100, six negative
-  controls x100, `reports/qualification.json`, release-manifest reseal.
-- `tests/` — 13 unit tests (`python3 -m unittest discover -s tests`).
+- Source: <https://github.com/blobfishai/sales-agent-simulation>
+- Harbor dataset: <https://hub.harborframework.com/datasets/blobfishai/salesbench-100>
+- Hugging Face dataset: <https://huggingface.co/datasets/SamuelChien821/salesbench-100>
+- Interactive benchmark: <https://blobfish.ai/benchmarks/salesbench-100>
 
-Verifier capability token: `verification_token(task_id)` =
-sha256("SalesBench-100 verifier capability::" + task_id); the world image holds
-only the token's sha256 (`spec.json`), the token appears only in `tests/test.sh`
-(verifier side); the agent container never sees it.
+Harbor release `v1.0.1` is dataset revision 2 (`0e615947326d`), with 100
+task artifacts at revision 2 and both `v1.0.1` and `latest` tags. A fresh
+explicit public download returned all 100 tasks. The representative downloaded
+task was rebuilt from scratch and passed with reward `1.000`.
+
+The public Hugging Face repository is ungated and contains 9,833 files at
+commit `c8e07c201016fba371b4ff901d0894753a8cd96c`. A fresh Hub download of the
+dataset card, qualification and model reports, representative task, and
+163-event trajectory parsed successfully; the task and trajectory matched the
+local release byte-for-byte.
+
+## Release contents
+
+- `salesbench/catalog.py`: 100 hand-authored business spines, balanced across
+  10 workflow families.
+- `salesbench/generation.py`: 96 realistic seeded documents per task, 16
+  portfolio entities, 48 distractor records, 12 authorized changes, four
+  protected control records, a 163-call reference trajectory, and deterministic
+  gold deliverables.
+- `salesbench/runtime/world.py`: 35 tools on four vendor-separated MCP surfaces
+  (filesystem 6, Salesforce 11, HubSpot 15, Gong 3).
+- `salesbench/runtime/scoring.py`: pure deterministic scoring over procedure,
+  exact final state, change ledger, executive brief, and collateral safety.
+  It makes no model, network, random, or wall-clock calls.
+- `salesbench/runtime/server.py`: streamable-HTTP MCP endpoints at
+  `/mcp/{filesystem,salesforce,hubspot,gong}`, plus `/health` and a verifier-only,
+  capability-token-protected `/verify` endpoint. There is no solve endpoint.
+- `salesbench/builder.py`: Harbor 1.4 task packs and dataset manifest, plus a
+  Hugging Face release with task JSON/JSONL, seeded documents, world source,
+  exact oracle trajectories, licenses, and evidence reports.
+- `salesbench/run_suite.py`: two complete replays and six adversarial negative
+  controls for every task, producing 800 deterministic executions.
+
+The Harbor v1.0.1 images bake the seeded documents into both containers and
+make the world copy read-only. That design is required for registry portability;
+it replaces the task-relative bind mount used by the superseded v1.0.0 pack.
+
+## Executed qualification
+
+| Check | Result |
+|---|---|
+| In-process oracle | 100/100 passed, reward 1.0 |
+| Exact deterministic replay | 100/100 reports matched |
+| Six negative controls | 600/600 correctly rejected; 0 false accepts |
+| Pristine no-op | exactly 0.0 on 100/100 tasks |
+| Total qualification executions | 800 |
+| Local unit tests | 14/14 passed |
+| Prompt skeletons | 100/100 unique |
+| Maximum pairwise prompt similarity | 0.762931 five-shingle Jaccard |
+| Seeded documents | 9,600 total; 9,600 unique SHA-256 digests |
+| Document depth | 5,252–6,692 bytes; 5,453-byte median |
+| Reference trajectory | 163 successful calls per task; 16,300 total |
+| Deterministic verifier criteria | 281 per task |
+| Initial full Harbor run | 59 pass, 38 infrastructure exceptions, 3 contention nonpasses |
+| Isolated Harbor recovery | all 41 initial nonpasses passed; combined 100/100 |
+| Local forced-build packaging smoke | reward 1.0 |
+| Fresh public v1.0.1 Harbor download | 100/100 artifacts downloaded |
+| Public forced-build representative run | reward 1.0; 0 infrastructure errors |
+
+The initial 100-task concurrent Harbor run deliberately remains in the
+evidence. Its 38 exceptions (`RewardFileNotFoundError`, `RuntimeError`, and
+`FileNotFoundError`) and three scored nonpasses were runner resource/contention
+failures. Every affected task passed in a fresh isolated Harbor job. This is
+reported as real infrastructure failure evidence, not hidden or relabeled as a
+task failure.
+
+The first public v1.0.0 artifact also remains recorded: it scored `0.165156`
+because registry-built containers could not resolve a task-relative document
+bind mount. v1.0.1 removed that mount, baked the data into the images, and then
+passed both a forced local build and a forced build from a fresh public download.
+
+Evidence:
+
+- `reports/conformance.json`
+- `reports/harbor-oracle-qualification.json`
+- `reports/harbor-registry-qualification.json`
+- `reports/model-evaluation.json`
+- generated `reports/build.json` and `reports/qualification.json`
+
+## Real-model evaluation
+
+One authenticated Harbor run used Codex agent `0.150.0`, `gpt-5.6-sol`, and
+maximum reasoning on `sb100-001-northwind-q3-commit`:
+
+| Signal | Result |
+|---|---|
+| Successful calls | 219 (175 unique) |
+| Evidence read | 96/96 documents |
+| Procedure / state | 100% / 100% |
+| Change ledger / brief | 94% / 36.8421% |
+| Weighted score | 92.1842% |
+| Strict pass | false |
+| Cost / duration | $1.7056176 / 569.66 seconds |
+
+The model made every authorized CRM mutation and preserved all protected state,
+but selected policy/control records instead of the required source-of-truth
+records for all 12 change citations. The deterministic verifier rejected those
+12 ledger criteria and the 12 corresponding brief criteria. This is an actual
+model failure, not an infrastructure exception. The benchmark page labels the
+result as one-task coverage; it is not represented as a 100-task model score.
+
+An earlier adapter attempt received HTTP 401 before task work because an empty
+`OPENAI_API_KEY` was supplied. It is retained in `model-evaluation.json` as an
+unscored harness-configuration failure.
 
 ## Reproduce
 
 ```bash
+git clone https://github.com/blobfishai/sales-agent-simulation.git
 cd sales-agent-simulation
-python3 -m unittest discover -s tests          # 13 tests
-python3 -m salesbench.builder                  # rebuild dist/salesbench-100
-python3 -m salesbench.run_suite                # 800 executions + qualification.json
-# Dockerized probe (run from a $HOME-mounted dir; /private/tmp is empty under Colima):
-mkdir -p ~/.cache/bf-audit/salesbench/tasks
-cp -R dist/salesbench-100/harbor/tasks/sb100-001-northwind-q3-commit ~/.cache/bf-audit/salesbench/tasks/
-cd ~/.cache/bf-audit/salesbench && harbor run -p tasks/sb100-001-northwind-q3-commit -a oracle -o jobs
+python3 -m unittest discover -s tests -v
+python3 -m salesbench.builder
+python3 -m salesbench.run_suite
+harbor run -d blobfishai/salesbench-100@v1.0.1 -a oracle -n 1
 ```
 
-## Qualification numbers (all executed in this session, 2026-08-26)
+The final command exercises the public Harbor release. Each verifier writes
+`report.json`, `reward.json`, and `reward.txt` under Harbor's verifier log
+directory.
 
-| Check | Result |
-|---|---|
-| Oracle replay (in-process, 163 calls each) | 100/100 tasks, reward 1.0 |
-| Determinism (second full replay) | 100/100 byte-identical verifier reports |
-| Negative controls (6 kinds x 100 tasks) | 600 executions, 0 false accepts |
-| Pristine no-op control | reward exactly 0.0 on 100/100 |
-| Total executions in `reports/qualification.json` | 800 |
-| Unit tests | 13/13 OK |
-| Dockerized Harbor oracle probe (job `sb100-probe-3`) | 2/2 trials, reward 1.0, 0 errors |
-| Docker-vs-in-process verifier reports (2 probed tasks) | identical `report_sha256` |
-| Prompt-skeleton uniqueness (litbench `skel()` normalization) | 100/100 unique |
-| Max pairwise prompt similarity (5-shingle Jaccard) | 0.762931 |
-| Seeded documents | 9,600 total, 9,600 unique sha256, 5,252–6,692 bytes |
-| Deterministic criteria per task | 281 (11 procedure + 51 state + 200 changes + 19 brief) |
+## Contract fidelity and limits
 
-Negative controls: `shortcut` (last 2 calls only; reward 0.49),
-`incomplete_read` (one required document skipped; 0.49), `unauthorized_write`
-(one off-scope field injected into an authorized mutation; ~0.982),
-`unauthorized_delete` (full oracle work plus one control-record delete; ~0.982,
-`no_delete_tool_succeeded` and `entire_business_state_exact` fail),
-`wrong_value` (fabricated `after` value + forbidden claim in brief; ~0.993),
-`noop` (pristine world; exactly 0.0). All 600 scored `passed: false`.
+Tool names and request schemas are pinned to immutable real implementations or
+official API specifications; see `research/API-CONTRACTS.md`. The conformance
+run checked all six filesystem contracts and behavior, matched vendor source
+fragments at their recorded commits, and confirmed that the official Salesforce,
+HubSpot, and Gong hosted endpoints returned authentication gates.
 
-Evidence files: `reports/harbor-probe/sb100-probe-3/` (also mirrored into
-`dist/salesbench-100/reports/` and `dist/salesbench-100/huggingface/reports/`),
-`dist/salesbench-100/reports/{build,qualification}.json`.
+The release does not claim an authenticated hosted `tools/list` comparison:
+`authenticated_hosted_tools_list_compared` is explicitly `false`. Offline
+response envelopes mirror the documented surfaces but are not byte-for-byte
+copies of tenant-hosted responses. Gong remains strictly read-only.
 
-## Honest caveats
-
-- `reports/conformance.json` (live 401 probes of the hosted Salesforce, HubSpot,
-  and Gong MCP endpoints plus behavior checks against the pinned npm filesystem
-  server) is committed evidence from an earlier run on 2026-08-26; it was NOT
-  re-executed in this session (it requires network and npx). Its
-  `authenticated_hosted_tools_list_compared` claim is `false` — hosted vendor
-  tool lists were verified against pinned source/docs, not an authenticated
-  live session.
-- The dockerized Harbor probe covered 2 of 100 packs (sb100-001, sb100-051);
-  the remaining 98 are proven by the in-process oracle + verifier only. All
-  packs share the same generated environment/server/test templates.
-- No real-model (non-oracle) run was executed in this session; the repo README
-  lists model-run evidence as a release target, and that evidence does not yet
-  exist for the sb100-* packs.
-- All 100 reference trajectories share one macro-structure (3 discovery +
-  96 reads + 8 metadata + 6 schema/account calls + 12 x (SOQL + HubSpot get +
-  Gong ask + mutation) + 2 deliverable writes = 163 calls). Diversity comes
-  from the hand-authored spines, prompts, entity data, and family-specific
-  mutation surfaces — prompt skeletons are 100/100 unique — but the procedure
-  shape is intentionally uniform.
-- `LICENSE` / `LICENSE-CODE` are short Apache-2.0 pointer texts (the
-  CounselBench pattern), not the full license text.
-- MCP output envelopes are offline simplifications documented in
-  `research/API-CONTRACTS.md`; tool names and input schemas are pinned to real
-  implementations at immutable commits, response payloads mirror but do not
-  replicate hosted behavior.
-- Nothing was published: no `harbor publish`, no `hf upload`, no pushes.
-  Docker note: a full local Docker network pool ("all predefined address pools
-  have been fully subnetted") bricks `harbor run`; `docker network prune -f`
-  cleared it.
+All 100 reference trajectories use the same auditable macro-procedure—orient,
+read 96 evidence documents, inspect metadata and schemas, reconcile 12 changes,
+then write two deliverables. Task content, companies, conflicts, authorized
+mutations, source records, and prompts are hand-authored per spine; exact
+documents and prompt skeletons have no duplicates.

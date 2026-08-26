@@ -11,7 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from .generation import MINIMUM_TOOL_CALLS, verification_token
+from .generation import MINIMUM_TOOL_CALLS, RELEASE_VERSION, verification_token
 from .runtime.world import SalesWorld
 
 
@@ -248,7 +248,7 @@ def run(release: Path) -> dict[str, Any]:
     report = {
         "schema_version": "salesbench.qualification.v1",
         "benchmark": "SalesBench-100",
-        "version": "1.0.0",
+        "version": RELEASE_VERSION,
         "task_count": len(task_dirs),
         "executions": len(task_dirs) * (2 + len(negative_runners)),
         "oracle": {

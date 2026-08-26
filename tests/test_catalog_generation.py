@@ -4,6 +4,7 @@ import hashlib
 import unittest
 from collections import Counter
 
+from salesbench.builder import compose_yaml, main_dockerfile, world_dockerfile
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
 from salesbench.generation import (
     DOCUMENT_COUNT,
@@ -46,6 +47,14 @@ class CatalogGenerationTests(unittest.TestCase):
             len({hashlib.sha256(content.encode("utf-8")).digest() for content in contents}),
             9_600,
         )
+
+    def test_seeded_documents_are_baked_into_public_harbor_images(self) -> None:
+        compose = compose_yaml()
+        self.assertNotIn("source: ./documents", compose)
+        self.assertIn("context: .", compose)
+        self.assertIn("dockerfile: world/Dockerfile", compose)
+        self.assertIn("COPY documents /workspace/documents", main_dockerfile())
+        self.assertIn("COPY documents /workspace/documents", world_dockerfile())
 
 
 if __name__ == "__main__":

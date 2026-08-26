@@ -32,7 +32,7 @@ from .generation import (
 RELEASE_NAME = "SalesBench-100"
 RELEASE_SLUG = "salesbench-100"
 HARBOR_ORG = "blobfishai"
-HF_ORG = "blobfish-ai"
+HF_ORG = "SamuelChien821"
 DATA_LICENSE = "CC-BY-4.0"
 CODE_LICENSE = "Apache-2.0"
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,18 +117,14 @@ def compose_yaml() -> str:
       world:
         condition: service_healthy
     volumes:
-      - type: bind
-        source: ./documents
-        target: /workspace/documents
-        read_only: true
       - type: volume
         source: salesbench_output
         target: /workspace/output
 
   world:
     build:
-      context: ./world
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: world/Dockerfile
     environment:
       SALESBENCH_DOCUMENTS: /workspace/documents
       SALESBENCH_OUTPUT: /workspace/output
@@ -138,10 +134,6 @@ def compose_yaml() -> str:
     expose:
       - "8972"
     volumes:
-      - type: bind
-        source: ./documents
-        target: /workspace/documents
-        read_only: true
       - type: volume
         source: salesbench_output
         target: /workspace/output
@@ -165,6 +157,7 @@ def main_dockerfile() -> str:
     return """FROM python:3.12-slim@sha256:7a8b475003c4fe15a2cd4e55e5cfc2f3560bdc9333d624f24cdd6d4340fd7a17
 WORKDIR /workspace
 COPY tool /usr/local/bin/tool
+COPY documents /workspace/documents
 RUN chmod 0755 /usr/local/bin/tool && mkdir -p /workspace/output
 CMD ["sleep", "infinity"]
 """
@@ -173,9 +166,10 @@ CMD ["sleep", "infinity"]
 def world_dockerfile() -> str:
     return """FROM python:3.12-slim@sha256:7a8b475003c4fe15a2cd4e55e5cfc2f3560bdc9333d624f24cdd6d4340fd7a17
 WORKDIR /opt/salesbench
-COPY salesbench ./salesbench
-COPY spec.json seed.json ./
-RUN mkdir -p /workspace/output /workspace/state
+COPY world/salesbench ./salesbench
+COPY world/spec.json world/seed.json ./
+COPY documents /workspace/documents
+RUN mkdir -p /workspace/output /workspace/state && chmod -R a-w /workspace/documents
 EXPOSE 8972
 CMD ["python3", "-m", "salesbench.runtime.server"]
 """
@@ -676,10 +670,16 @@ def build(output: Path) -> dict[str, Any]:
     _validate_report(report)
     write_json(output / "reports" / "build.json", report)
     write_json(hf_root / "reports" / "build.json", report)
-    conformance = ROOT / "reports" / "conformance.json"
-    if conformance.is_file():
-        shutil.copy2(conformance, output / "reports" / "conformance.json")
-        shutil.copy2(conformance, hf_root / "reports" / "conformance.json")
+    for report_name in (
+        "conformance.json",
+        "harbor-oracle-qualification.json",
+        "harbor-registry-qualification.json",
+        "model-evaluation.json",
+    ):
+        evidence = ROOT / "reports" / report_name
+        if evidence.is_file():
+            shutil.copy2(evidence, output / "reports" / report_name)
+            shutil.copy2(evidence, hf_root / "reports" / report_name)
     write_json(output / "task-index.json", index)
 
     task_rows = sorted(
