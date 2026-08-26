@@ -1,0 +1,99 @@
+{
+  "schema_version": "salesbench.model-evaluation.v1",
+  "benchmark": "SalesBench-100",
+  "benchmark_version": "1.0.1",
+  "observed_at": "2026-08-26T20:37:21.880977Z",
+  "harness": {
+    "name": "Harbor",
+    "version": "0.21.0",
+    "agent_adapter": "codex",
+    "agent_version": "0.150.0"
+  },
+  "model": {
+    "name": "gpt-5.6-sol",
+    "reasoning_effort": "max",
+    "authentication": "Codex auth.json forwarded by the Harbor adapter"
+  },
+  "coverage": {
+    "task_count": 1,
+    "task_id": "sb100-001-northwind-q3-commit",
+    "full_benchmark_run": false,
+    "leaderboard_scope": "single public sample task"
+  },
+  "result": {
+    "strict_pass": false,
+    "criteria_score": 0.921842,
+    "category_scores": {
+      "procedure": 1.0,
+      "state": 1.0,
+      "changes": 0.94,
+      "brief": 0.368421
+    },
+    "documents_read": 96,
+    "required_documents": 96,
+    "successful_tool_calls": 219,
+    "unique_successful_tool_calls": 175,
+    "minimum_reference_tool_calls": 163,
+    "duration_seconds": 569.66,
+    "input_tokens": 1946889,
+    "cached_input_tokens": 1810944,
+    "output_tokens": 21873,
+    "cost_usd": 1.7056176,
+    "verifier_report_sha256": "05451f21d22d2395e400706200c0a7063db3213ec6cbcddde2b76a45c56dd09e"
+  },
+  "failure": {
+    "failed_criteria_count": 24,
+    "failed_criteria": [
+      "brief.change.CHG-001-01",
+      "brief.change.CHG-001-02",
+      "brief.change.CHG-001-03",
+      "brief.change.CHG-001-04",
+      "brief.change.CHG-001-05",
+      "brief.change.CHG-001-06",
+      "brief.change.CHG-001-07",
+      "brief.change.CHG-001-08",
+      "brief.change.CHG-001-09",
+      "brief.change.CHG-001-10",
+      "brief.change.CHG-001-11",
+      "brief.change.CHG-001-12",
+      "changes.CHG-001-01.primary_source",
+      "changes.CHG-001-02.primary_source",
+      "changes.CHG-001-03.primary_source",
+      "changes.CHG-001-04.primary_source",
+      "changes.CHG-001-05.primary_source",
+      "changes.CHG-001-06.primary_source",
+      "changes.CHG-001-07.primary_source",
+      "changes.CHG-001-08.primary_source",
+      "changes.CHG-001-09.primary_source",
+      "changes.CHG-001-10.primary_source",
+      "changes.CHG-001-11.primary_source",
+      "changes.CHG-001-12.primary_source"
+    ],
+    "summary": "The model completed every required evidence read, system query, authorized state mutation, and collateral-state check. It cited stage-policy or close-plan control records as each change's primary source instead of the task's expected source-of-truth record; those twelve source mismatches propagated into the executive brief. The failure is deterministic and task-level, not an infrastructure exception."
+  },
+  "attempts": [
+    {
+      "kind": "harness_configuration_failure",
+      "started_at": "2026-08-26T20:19:08.285747Z",
+      "finished_at": "2026-08-26T20:22:10.675855Z",
+      "scored": false,
+      "exception": "NonZeroAgentExitCodeError",
+      "cause": "The first Harbor Codex invocation supplied an empty OPENAI_API_KEY and received HTTP 401 before task work began. It is excluded from the benchmark score."
+    },
+    {
+      "kind": "authenticated_model_evaluation",
+      "job_id": "c384cbe0-3836-487d-aead-da341356b4ba",
+      "trial_id": "c193676a-ba6b-4a79-8a8a-c0863f1a282b",
+      "started_at": "2026-08-26T20:27:52.199474Z",
+      "finished_at": "2026-08-26T20:37:21.860222Z",
+      "scored": true,
+      "infrastructure_errors": 0
+    }
+  ],
+  "artifact_digests": {
+    "harbor_job_result_sha256": "f78873b65ae1373d04f9651a56c922862f3c50ac6a1569a5edd0a1c5a200f130",
+    "redacted_verifier_artifact_sha256": "f778b3e61a1e2f7b2a6726fdff2dfcfd26c50188aba4aee96dc18636813587ae",
+    "atif_trajectory_sha256": "bbe60f36e2a75610e9dda8439e59e9f1b8ff3e3d063956ba5a18c2f216b3f9b7",
+    "native_codex_rollout_sha256": "fcc170a9be88c686ab5c16c922efa4b23101bf39344b4f2d28cd5f88e7f819ac"
+  }
+}

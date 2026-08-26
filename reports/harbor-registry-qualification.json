@@ -1,0 +1,58 @@
+{
+  "schema_version": "salesbench.harbor-registry-qualification.v1",
+  "benchmark": "SalesBench-100",
+  "benchmark_version": "1.0.1",
+  "observed_at": "2026-08-26T20:50:47.814788Z",
+  "publisher": "blobfishai",
+  "dataset": {
+    "name": "blobfishai/salesbench-100",
+    "url": "https://hub.harborframework.com/datasets/blobfishai/salesbench-100",
+    "revision": 2,
+    "content_hash_prefix": "0e615947326d",
+    "task_count": 100,
+    "downloaded_task_count": 100,
+    "requested_tag": "v1.0.1",
+    "latest_tag_updated": true,
+    "fresh_download": true
+  },
+  "task_artifacts": {
+    "published_task_count": 100,
+    "artifact_revision": 2,
+    "files_per_task": 114,
+    "representative_task": "blobfishai/sb100-001-northwind-q3-commit",
+    "representative_task_checksum": "aa6a5d336cbb70cfe624fd36167c68a99f8ca585d8dd32bcaa0025af40636fbb"
+  },
+  "public_roundtrip": {
+    "source": "fresh explicit blobfishai/salesbench-100@v1.0.1 download",
+    "agent": "oracle",
+    "environment_force_build": true,
+    "task_id": "sb100-001-northwind-q3-commit",
+    "passed": 1.0,
+    "reward": 1.0,
+    "infrastructure_errors": 0,
+    "started_at": "2026-08-26T20:50:14.950731Z",
+    "finished_at": "2026-08-26T20:50:47.814788Z",
+    "harbor_job_result_sha256": "ea8f9ff11294764bf06a824b66a20629ae24668e3bcd8bdcede1757d45e5e1de"
+  },
+  "local_packaging_smoke": {
+    "agent": "oracle",
+    "environment_force_build": true,
+    "task_id": "sb100-001-northwind-q3-commit",
+    "passed": 1.0,
+    "reward": 1.0,
+    "infrastructure_errors": 0,
+    "harbor_job_result_sha256": "05642c27e9eeb25ff5523ea7cfc3f967ece7d43a1d7ba4dd0d9ac0f4afc1e140"
+  },
+  "superseded_failure": {
+    "benchmark_version": "1.0.0",
+    "source": "fresh public registry download",
+    "task_id": "sb100-001-northwind-q3-commit",
+    "passed": 0.0,
+    "reward": 0.165156,
+    "infrastructure_errors": 0,
+    "cause": "The v1.0.0 Harbor pack used a task-relative bind mount for seeded documents. Registry-built Docker images could not resolve that host path, so the reference agent stopped at the first document read with ENOENT.",
+    "resolution": "v1.0.1 bakes the read-only seeded documents into both task images and removes the bind mount. A forced local build and a forced build from a fresh public v1.0.1 download both score 1.0.",
+    "harbor_job_result_sha256": "cb9588d6cc15e273960fe63f8e35a8c15a7b6c6b1021071ec86dfdbb34a6ff9f"
+  },
+  "release_passed": true
+}

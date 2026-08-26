@@ -1,0 +1,30 @@
+{
+  "agent": "oracle",
+  "combined": {
+    "missing_recovery_results": [],
+    "release_passed": true,
+    "unique_tasks_failed": 0,
+    "unique_tasks_passed": 100
+  },
+  "initial_concurrent_run": {
+    "exception_types": {
+      "FileNotFoundError": 4,
+      "RewardFileNotFoundError": 22,
+      "RuntimeError": 12
+    },
+    "infrastructure_exceptions": 38,
+    "nonpasses": 41,
+    "passes": 59,
+    "scored_nonpasses": 3
+  },
+  "interpretation": "All initial nonpasses succeeded in fresh isolated Harbor jobs. The concurrent run's nonpasses are retained as real infrastructure failure evidence and are not represented as benchmark task failures.",
+  "isolated_recovery": {
+    "failures": 0,
+    "passes": 41,
+    "targeted_tasks": 41,
+    "workers": 2
+  },
+  "runner": "harbor",
+  "schema_version": "salesbench.harbor-oracle-qualification.v1",
+  "task_count": 100
+}
