@@ -273,7 +273,7 @@ with open(os.path.join(root, "report.json"), "w", encoding="utf-8") as stream:
 with open(os.path.join(root, "reward.json"), "w", encoding="utf-8") as stream:
     json.dump(reward, stream, sort_keys=True)
 with open(os.path.join(root, "reward.txt"), "w", encoding="utf-8") as stream:
-    stream.write(f"{{reward['reward']}}\n")
+    stream.write(f"{{reward['reward']}}\\n")
 print(json.dumps({{"passed": bool(report.get("passed")), "reward": reward["reward"]}}))
 PYEOF
 '''
@@ -706,7 +706,17 @@ keywords = ["sales", "salesforce", "hubspot", "gong", "mcp", "long-horizon"]
     write_text(output / "harbor" / "dataset" / "dataset.toml", dataset_toml)
     write_text(output / "harbor" / "README.md", source_readme())
 
-    release_files = sorted(path for path in output.rglob("*") if path.is_file())
+    seal_release_manifest(output)
+    return report
+
+
+def seal_release_manifest(output: Path) -> dict[str, Any]:
+    manifest_path = output / "release-manifest.json"
+    release_files = sorted(
+        path
+        for path in output.rglob("*")
+        if path.is_file() and path != manifest_path
+    )
     manifest = {
         "schema_version": "salesbench.release.v1",
         "benchmark": RELEASE_NAME,
@@ -723,8 +733,8 @@ keywords = ["sales", "salesforce", "hubspot", "gong", "mcp", "long-horizon"]
     manifest["manifest_sha256"] = hashlib.sha256(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    write_json(output / "release-manifest.json", manifest)
-    return report
+    write_json(manifest_path, manifest)
+    return manifest
 
 
 def parse_args() -> argparse.Namespace:

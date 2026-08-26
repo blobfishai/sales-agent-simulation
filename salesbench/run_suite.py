@@ -287,6 +287,9 @@ def run(release: Path) -> dict[str, Any]:
         write = json.dumps(report, indent=2, sort_keys=True) + "\n"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(write, encoding="utf-8")
+    from .builder import seal_release_manifest
+
+    seal_release_manifest(release)
     print(
         json.dumps(
             {
