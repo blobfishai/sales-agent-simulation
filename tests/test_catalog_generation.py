@@ -4,7 +4,7 @@ import hashlib
 import unittest
 from collections import Counter
 
-from salesbench.builder import compose_yaml, main_dockerfile, world_dockerfile
+from salesbench.builder import compose_yaml, dataset_card, main_dockerfile, world_dockerfile
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
 from salesbench.generation import (
     DOCUMENT_COUNT,
@@ -55,6 +55,11 @@ class CatalogGenerationTests(unittest.TestCase):
         self.assertIn("dockerfile: world/Dockerfile", compose)
         self.assertIn("COPY documents /workspace/documents", main_dockerfile())
         self.assertIn("COPY documents /workspace/documents", world_dockerfile())
+
+    def test_hugging_face_viewer_targets_only_the_task_jsonl(self) -> None:
+        card = dataset_card()
+        self.assertIn("configs:\n- config_name: default", card)
+        self.assertIn("split: test\n    path: data/tasks.jsonl", card)
 
 
 if __name__ == "__main__":

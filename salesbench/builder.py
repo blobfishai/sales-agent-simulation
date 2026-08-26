@@ -475,6 +475,11 @@ tags:
 pretty_name: {RELEASE_NAME}
 size_categories:
 - n<1K
+configs:
+- config_name: default
+  data_files:
+  - split: test
+    path: data/tasks.jsonl
 ---
 
 # {RELEASE_NAME}

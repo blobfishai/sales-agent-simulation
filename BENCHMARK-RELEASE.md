@@ -18,7 +18,7 @@ explicit public download returned all 100 tasks. The representative downloaded
 task was rebuilt from scratch and passed with reward `1.000`.
 
 The public Hugging Face repository is ungated and contains 9,833 files at
-commit `c8e07c201016fba371b4ff901d0894753a8cd96c`. A fresh Hub download of the
+commit `9d7265669109307c861ac994644e2cd26d9f152c`. A fresh Hub download of the
 dataset card, qualification and model reports, representative task, and
 163-event trajectory parsed successfully; the task and trajectory matched the
 local release byte-for-byte.
@@ -58,7 +58,7 @@ it replaces the task-relative bind mount used by the superseded v1.0.0 pack.
 | Six negative controls | 600/600 correctly rejected; 0 false accepts |
 | Pristine no-op | exactly 0.0 on 100/100 tasks |
 | Total qualification executions | 800 |
-| Local unit tests | 14/14 passed |
+| Local unit tests | 15/15 passed |
 | Prompt skeletons | 100/100 unique |
 | Maximum pairwise prompt similarity | 0.762931 five-shingle Jaccard |
 | Seeded documents | 9,600 total; 9,600 unique SHA-256 digests |
