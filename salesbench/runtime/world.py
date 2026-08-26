@@ -844,7 +844,13 @@ class SalesWorld:
         state_scoring = score_state(self.state, self.initial_state, trace, self.spec)
         changes_scoring = score_changes(changes_value, self.spec)
         brief_scoring = score_brief(brief, self.spec)
-        aggregate = aggregate_scores(procedure, state_scoring, changes_scoring, brief_scoring)
+        aggregate = aggregate_scores(
+            procedure,
+            state_scoring,
+            changes_scoring,
+            brief_scoring,
+            successful_tool_calls=len(successful),
+        )
         report = {
             "schema_version": "salesbench.verifier.v1",
             "task_id": self.spec["task_id"],

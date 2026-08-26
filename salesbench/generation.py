@@ -101,8 +101,8 @@ def verification_token(task_id: str) -> str:
     return sha256_text(f"SalesBench-100 verifier capability::{task_id}")
 
 
-def task_id_for(index: int) -> str:
-    return f"salesbench-{index:03d}"
+def task_id_for(index: int, slug: str) -> str:
+    return f"sb100-{index:03d}-{slug}"
 
 
 def _sf_id(prefix: str, task_number: int, slot: int) -> str:
@@ -786,7 +786,7 @@ def build_seed(
 
     return {
         "schema_version": "salesbench.seed.v1",
-        "task_id": task_id_for(task_number),
+        "task_id": task_id_for(task_number, spine.slug),
         "salesforce": {
             "user": {
                 "userId": "005SB000000000", "name": spine.requester,
@@ -983,7 +983,7 @@ This is task `{task_id}`. All people, companies, records, and commercial facts a
 
 
 def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
-    task_id = task_id_for(task_number)
+    task_id = task_id_for(task_number, spine.slug)
     entities = build_entities(spine, task_number)
     changes = build_changes(spine, task_number, entities)
     documents, paths_by_key = build_documents(

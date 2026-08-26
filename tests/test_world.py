@@ -59,6 +59,34 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertLessEqual(report["reward"], 0.49)
 
+    def test_pristine_noop_world_scores_exactly_zero(self) -> None:
+        world = self.world("noop")
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["reward"], 0.0)
+        self.assertEqual(report["reward_cap_reason"], "no_mcp_interaction")
+
+    def test_unauthorized_delete_fails_verification(self) -> None:
+        world = self.world("delete")
+        for call in self.task.reference["calls"]:
+            world.call_tool(call["server"], call["name"], call["arguments"])
+        target = next(
+            row
+            for row in world.state["salesforce"]["objects"]["Account"]
+            if str(row.get("SalesBenchKey__c", "")).startswith("CTRL-")
+        )
+        result = world.call_tool(
+            "salesforce",
+            "deleteSobjectRecord",
+            {"sobject-name": "Account", "id": target["Id"]},
+        )
+        self.assertFalse(result["isError"])
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertFalse(report["passed"])
+        state_criteria = report["criteria"]["state"]["criteria"]
+        self.assertFalse(state_criteria["no_delete_tool_succeeded"])
+        self.assertFalse(state_criteria["entire_business_state_exact"])
+
     def test_verifier_capability_is_not_public(self) -> None:
         world = self.world("token")
         with self.assertRaises(PermissionError):

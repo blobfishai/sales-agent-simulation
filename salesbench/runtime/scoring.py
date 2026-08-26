@@ -242,6 +242,8 @@ def aggregate_scores(
     state: dict[str, Any],
     changes: dict[str, Any],
     brief: dict[str, Any],
+    *,
+    successful_tool_calls: int = -1,
 ) -> dict[str, Any]:
     scores = {
         "procedure": round(mean(procedure), 6),
@@ -253,7 +255,13 @@ def aggregate_scores(
     uncapped = sum(scores[key] * weights[key] for key in scores)
     reward = uncapped
     cap_reason = None
-    if not procedure.get("exact_deliverable_set") or not procedure.get(
+    if successful_tool_calls == 0:
+        # A pristine world with zero successful MCP interactions earns nothing:
+        # untouched seed state and absent deliverables must not collect the
+        # partial credit that vacuously-true criteria would otherwise supply.
+        reward = 0.0
+        cap_reason = "no_mcp_interaction"
+    elif not procedure.get("exact_deliverable_set") or not procedure.get(
         "deliverables_written_through_mcp"
     ):
         reward = min(reward, 0.20)

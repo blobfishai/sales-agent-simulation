@@ -34,7 +34,7 @@ RELEASE_SLUG = "salesbench-100"
 HARBOR_ORG = "blobfishai"
 HF_ORG = "blobfish-ai"
 DATA_LICENSE = "CC-BY-4.0"
-CODE_LICENSE = "MIT"
+CODE_LICENSE = "Apache-2.0"
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_FILES = (
     "__init__.py",
@@ -75,7 +75,7 @@ url = "http://world:8972/mcp/{server}"
     return f'''schema_version = "1.4"
 
 [task]
-name = "{HARBOR_ORG}/sb100-{task.spec['task_number']:03d}-{task.spine.slug}"
+name = "{HARBOR_ORG}/{task.task_id}"
 version = "{RELEASE_VERSION}"
 description = "{task.spec['family_label']}: {task.spine.title}"
 authors = []
@@ -242,7 +242,7 @@ def call(server, name, arguments):
 for entry in REFERENCE["calls"]:
     call(entry["server"], entry["name"], entry["arguments"])
 print(json.dumps({"task_id": REFERENCE["task_id"], "successful_tool_calls": request_id}))
-if request_id != 163:
+if request_id != ''' + str(MINIMUM_TOOL_CALLS) + r''':
     raise SystemExit("reference trajectory length changed")
 '''
 
@@ -265,13 +265,16 @@ try:
 except Exception as error:
     report = {{"passed": False, "reward": 0.0, "error": repr(error)}}
 reward = {{"reward": float(report.get("reward", 0.0)), "passed": 1.0 if report.get("passed") else 0.0}}
-root = os.path.join(os.environ.get("HARBOR_LOGS", "/logs"), "verifier")
+logs = os.environ.get("HARBOR_LOGS") or os.environ.get("VERIFIER_LOG_DIR") or "/logs"
+root = os.path.join(logs, "verifier")
 os.makedirs(root, exist_ok=True)
 with open(os.path.join(root, "report.json"), "w", encoding="utf-8") as stream:
     json.dump(report, stream, indent=2, sort_keys=True)
 with open(os.path.join(root, "reward.json"), "w", encoding="utf-8") as stream:
     json.dump(reward, stream, sort_keys=True)
-print(json.dumps(reward))
+with open(os.path.join(root, "reward.txt"), "w", encoding="utf-8") as stream:
+    stream.write(f"{{reward['reward']}}\n")
+print(json.dumps({{"passed": bool(report.get("passed")), "reward": reward["reward"]}}))
 PYEOF
 '''
 
@@ -359,6 +362,8 @@ def create_task_pack(
         "metadata": {
             "benchmark": RELEASE_NAME,
             "version": RELEASE_VERSION,
+            "grading": "deterministic",
+            "llm_judge": False,
             "workflow_family": task.spine.family,
             "company": task.spine.company,
             "industry": task.spine.industry,
@@ -379,12 +384,56 @@ def create_task_pack(
         "workflow_family": task.spine.family,
         "company": task.spine.company,
         "task_pack": f"tasks/{task.task_id}",
-        "harbor_name": f"{HARBOR_ORG}/sb100-{task.spec['task_number']:03d}-{task.spine.slug}",
+        "harbor_name": f"{HARBOR_ORG}/{task.task_id}",
         "documents": DOCUMENT_COUNT,
         "reference_tool_calls": MINIMUM_TOOL_CALLS,
         "authorized_mutations": TARGET_CHANGE_COUNT,
     }
     return record, index
+
+
+PACK_IGNORE_SUFFIXES = (".pyc", ".swp", ".swo", "~")
+
+
+def harbor_content_digest(task_dir: Path) -> str:
+    """Replicate the Harbor publisher's task content hash (packager.py).
+
+    Files: task.toml, instruction.md, README.md, trajectory.json plus the
+    environment/, tests/, solution/, and steps/ trees, filtered by the default
+    ignore set, sorted by POSIX relative path, digested as "rel\\0sha256\\n".
+    """
+    task_dir = task_dir.resolve()
+    files: list[Path] = []
+    for single in ("task.toml", "instruction.md", "README.md", "trajectory.json"):
+        path = task_dir / single
+        if path.is_file():
+            files.append(path)
+    for directory in ("environment", "tests", "solution", "steps"):
+        root = task_dir / directory
+        if root.is_dir():
+            files.extend(path for path in root.rglob("*") if path.is_file())
+    files = [
+        path
+        for path in files
+        if "__pycache__" not in path.parts
+        and path.name != ".DS_Store"
+        and not path.name.endswith(PACK_IGNORE_SUFFIXES)
+    ]
+    files.sort(key=lambda path: path.relative_to(task_dir).as_posix())
+    outer = hashlib.sha256()
+    for path in files:
+        relative = path.relative_to(task_dir).as_posix()
+        outer.update(f"{relative}\0{sha256_file(path)}\n".encode("utf-8"))
+    return outer.hexdigest()
+
+
+def prompt_skeleton(value: str) -> str:
+    """Litbench-style prompt skeleton: numbers, IDs, and amounts normalized."""
+    value = re.sub(r"\d[\d,.]*", "<N>", value)
+    value = re.sub(r"[A-Z]{2,}[-A-Z0-9]+", "<ID>", value)
+    value = re.sub(r"\$\S+", "<AMT>", value)
+    value = re.sub(r"\s+", " ", value)
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def words(value: str) -> list[str]:
@@ -466,7 +515,8 @@ size_categories:
 | Reference MCP calls per task | 163 |
 | Verifier network/model/clock/random calls | 0 |
 | Oracle and replay passes | 100/100 each |
-| False accepts across four negative controls | 0 |
+| False accepts across six negative controls | 0 |
+| Reward for the pristine no-op control | exactly 0.0 |
 
 Measured results live in `reports/qualification.json`. Reference traces are implementation proofs, not model scores.
 
@@ -523,6 +573,7 @@ def _validate_report(report: dict[str, Any]) -> None:
         "exact_reference_calls": report["reference_tool_calls_per_task"] == MINIMUM_TOOL_CALLS,
         "exact_changes": report["authorized_mutations_per_task"] == TARGET_CHANGE_COUNT,
         "prompt_similarity": report["prompt_uniqueness"]["maximum_jaccard_5_shingle"] < 0.80,
+        "prompt_skeletons_all_unique": report["prompt_skeletons_unique"] == 100,
         "duplicate_prompts": report["exact_duplicate_prompts"] == 0,
         "required_servers": report["required_mcp_servers"] == ["filesystem", "gong", "hubspot", "salesforce"],
     }
@@ -608,6 +659,7 @@ def build(output: Path) -> dict[str, Any]:
         "required_mcp_servers": sorted(servers),
         "tool_counts_by_server": {server: len(tools) for server, tools in TOOLS_BY_SERVER.items()},
         "prompt_uniqueness": maximum_pair_similarity(prompts),
+        "prompt_skeletons_unique": len({prompt_skeleton(prompt) for prompt in prompts}),
         "exact_duplicate_prompts": len(prompts) - len(set(prompts)),
         "exact_duplicate_documents": len(document_sizes) - len(document_hashes),
         "fixed_file_timestamp": FIXED_FILE_TIMESTAMP,
@@ -630,18 +682,28 @@ def build(output: Path) -> dict[str, Any]:
         shutil.copy2(conformance, hf_root / "reports" / "conformance.json")
     write_json(output / "task-index.json", index)
 
-    write_text(
-        output / "harbor" / "dataset" / "dataset.toml.template",
+    task_rows = sorted(
+        (
+            f"{HARBOR_ORG}/{task_dir.name}",
+            harbor_content_digest(task_dir),
+        )
+        for task_dir in tasks_root.iterdir()
+        if task_dir.is_dir()
+    )
+    dataset_toml = (
         f'''[dataset]
 name = "{HARBOR_ORG}/{RELEASE_SLUG}"
 version = "{RELEASE_VERSION}"
 description = "100 synthetic Salesforce, HubSpot, Gong, and RevOps tasks with deterministic 163-call trajectories."
 authors = []
 keywords = ["sales", "salesforce", "hubspot", "gong", "mcp", "long-horizon"]
-
-# Harbor publication fills 100 [[tasks]] entries with content digests.
-''',
+'''
+        + "".join(
+            f'\n[[tasks]]\nname = "{name}"\ndigest = "sha256:{digest}"\n'
+            for name, digest in task_rows
+        )
     )
+    write_text(output / "harbor" / "dataset" / "dataset.toml", dataset_toml)
     write_text(output / "harbor" / "README.md", source_readme())
 
     release_files = sorted(path for path in output.rglob("*") if path.is_file())

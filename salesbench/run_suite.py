@@ -42,7 +42,12 @@ def shortcut(world: SalesWorld, spec: dict[str, Any], reference: dict[str, Any])
         checked_call(world, call["server"], call["name"], call["arguments"])
 
 
-def incomplete_evidence(
+def noop(world: SalesWorld, spec: dict[str, Any], reference: dict[str, Any]) -> None:
+    """Pristine world: the agent never touches any MCP surface."""
+    del world, spec, reference
+
+
+def incomplete_read(
     world: SalesWorld,
     spec: dict[str, Any],
     reference: dict[str, Any],
@@ -61,7 +66,7 @@ def incomplete_evidence(
         checked_call(world, call["server"], call["name"], call["arguments"])
 
 
-def collateral_mutation(
+def unauthorized_write(
     world: SalesWorld,
     spec: dict[str, Any],
     reference: dict[str, Any],
@@ -84,7 +89,28 @@ def collateral_mutation(
         checked_call(world, call["server"], call["name"], arguments)
 
 
-def fabricated_outputs(
+def unauthorized_delete(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Complete the oracle work, then delete one off-scope control record."""
+    for call in reference["calls"]:
+        checked_call(world, call["server"], call["name"], call["arguments"])
+    control_account = next(
+        row
+        for row in world.state["salesforce"]["objects"]["Account"]
+        if str(row.get("SalesBenchKey__c", "")).startswith("CTRL-")
+    )
+    checked_call(
+        world,
+        "salesforce",
+        "deleteSobjectRecord",
+        {"sobject-name": "Account", "id": control_account["Id"]},
+    )
+
+
+def wrong_value(
     world: SalesWorld,
     spec: dict[str, Any],
     reference: dict[str, Any],
@@ -168,12 +194,15 @@ def run(release: Path) -> dict[str, Any]:
 
     negative_runners: list[tuple[str, Runner]] = [
         ("shortcut", shortcut),
-        ("incomplete_evidence", incomplete_evidence),
-        ("collateral_mutation", collateral_mutation),
-        ("fabricated_outputs", fabricated_outputs),
+        ("incomplete_read", incomplete_read),
+        ("unauthorized_write", unauthorized_write),
+        ("unauthorized_delete", unauthorized_delete),
+        ("wrong_value", wrong_value),
+        ("noop", noop),
     ]
     oracle_passes = 0
     replay_matches = 0
+    noop_nonzero_rewards = 0
     false_accepts = {name: 0 for name, _ in negative_runners}
     failure_samples: dict[str, list[dict[str, Any]]] = {
         name: [] for name, _ in negative_runners
@@ -191,6 +220,8 @@ def run(release: Path) -> dict[str, Any]:
         for name, runner in negative_runners:
             negative = execute(task_dir, runner)
             false_accepts[name] += int(negative["passed"])
+            if name == "noop" and negative["reward"] != 0.0:
+                noop_nonzero_rewards += 1
             summary = {
                 "passed": negative["passed"],
                 "reward": negative["reward"],
@@ -239,11 +270,13 @@ def run(release: Path) -> dict[str, Any]:
             }
             for name, count in false_accepts.items()
         },
+        "noop_nonzero_rewards": noop_nonzero_rewards,
         "failure_samples": failure_samples,
         "release_passed": (
             oracle_passes == len(task_dirs)
             and replay_matches == len(task_dirs)
             and not any(false_accepts.values())
+            and noop_nonzero_rewards == 0
         ),
         "task_results": task_results,
     }
@@ -262,6 +295,7 @@ def run(release: Path) -> dict[str, Any]:
                 "oracle": report["oracle"],
                 "determinism": report["determinism"],
                 "negative_controls": report["negative_controls"],
+                "noop_nonzero_rewards": report["noop_nonzero_rewards"],
             },
             indent=2,
             sort_keys=True,
