@@ -1,0 +1,140 @@
+{
+  "claims": {
+    "authenticated_hosted_tools_list_compared": false,
+    "filesystem_exact_tools_list_subset": true,
+    "offline_outputs_use_mcp_content_and_structured_content": true,
+    "three_hosted_vendor_mcp_endpoints_live_and_auth_gated": true,
+    "vendor_tool_names_and_input_keys_present_at_pins": true
+  },
+  "filesystem_live_package": {
+    "behavior_checks": {
+      "directory_tree": true,
+      "get_file_info": true,
+      "list_allowed_directories": true,
+      "read_text_file": true,
+      "search_files": true,
+      "write_file": true
+    },
+    "contract_checks": {
+      "directory_tree": true,
+      "get_file_info": true,
+      "list_allowed_directories": true,
+      "read_text_file": true,
+      "search_files": true,
+      "write_file": true
+    },
+    "initialize": {
+      "capabilities": {
+        "tools": {
+          "listChanged": true
+        }
+      },
+      "protocolVersion": "2025-06-18",
+      "serverInfo": {
+        "name": "secure-filesystem-server",
+        "version": "0.2.0"
+      }
+    },
+    "passed": true,
+    "pin": {
+      "commit": "9a96ea6e5913736f92b88345bf51caeaaa8e719f",
+      "package": "@modelcontextprotocol/server-filesystem",
+      "repository": "https://github.com/modelcontextprotocol/servers",
+      "version": "2026.7.10"
+    }
+  },
+  "hosted_endpoint_probes": {
+    "gong": {
+      "auth_gate_present": true,
+      "status": 401,
+      "url": "https://mcp.gong.io/mcp",
+      "www_authenticate_present": true
+    },
+    "hubspot": {
+      "auth_gate_present": true,
+      "status": 401,
+      "url": "https://mcp.hubspot.com/",
+      "www_authenticate_present": true
+    },
+    "salesforce": {
+      "auth_gate_present": true,
+      "status": 401,
+      "url": "https://api.salesforce.com/platform/mcp/v1/platform/sobject-all",
+      "www_authenticate_present": false
+    }
+  },
+  "limitations": [
+    "Tenant-authenticated tools/list was not available for the three hosted vendor servers.",
+    "HubSpot response envelopes are deterministic CRM v3/v4 fixtures rather than live tenant data.",
+    "Gong synthesized insight text is seeded and does not invoke Gong proprietary AI generation."
+  ],
+  "passed": true,
+  "schema_version": "salesbench.conformance.v1",
+  "vendor_source_contracts": {
+    "gong": {
+      "official_names_drop_open_source_prefix": true,
+      "required_fragments": {
+        "\"gong_ask_account\"": true,
+        "\"gong_ask_deal\"": true,
+        "\"gong_generate_brief\"": true,
+        "briefName": true,
+        "crmAccountId": true,
+        "crmDealId": true,
+        "crmEntityId": true,
+        "crmEntityType": true,
+        "z.enum([\"THIS_WEEK\", \"THIS_MONTH\", \"THIS_QUARTER\", \"THIS_YEAR\"])": true
+      },
+      "sha256": "dfb772618053a5eaa5bf4a0ff6653385b13847f32151850f95e018d6cacfac63",
+      "source": "https://raw.githubusercontent.com/gonimbly/gong-mcp/bcbb289e96bf1ff8b0d9637d8dc0d4ce11891998/src/tools/entities.ts"
+    },
+    "hubspot": {
+      "required_fragments": {
+        "async def hubspot_associate_default": true,
+        "async def hubspot_batch_read_objects": true,
+        "async def hubspot_create_note": true,
+        "async def hubspot_create_object": true,
+        "async def hubspot_create_task": true,
+        "async def hubspot_delete_object": true,
+        "async def hubspot_get_account_details": true,
+        "async def hubspot_get_object": true,
+        "async def hubspot_get_object_schema": true,
+        "async def hubspot_list_associations": true,
+        "async def hubspot_list_objects": true,
+        "async def hubspot_list_owners": true,
+        "async def hubspot_list_pipelines": true,
+        "async def hubspot_search_objects": true,
+        "async def hubspot_update_object": true
+      },
+      "source_commit": "af798766ccd3385e4a9616a106f580b9f3a0f976",
+      "source_sha256": {
+        "associations.py": "581bdcc6cfbea6fd4d3a5ae0cfa660901210dbf1fe651060b18792af3b16865d",
+        "engagements.py": "694dbf614c71d6e17bc5fc6ab4e5b8ad749bf3f3f1618c9859cb4c55b169eccf",
+        "misc.py": "aa0803121ba52ed7d5339513c810fe8333c85d854750ecb44a67ffa3348d1ed3",
+        "objects.py": "75e892d7b2889a32a17034c22686daf247abcfdd127bb20b27005296b4446e8a",
+        "owners.py": "93817076ac10fda06cf03656cb9ee7b0a340c60a4a9a644cfa41303a62104939",
+        "pipelines.py": "ecec41b61c826eaffc6a55ee546f883f9f3f8bb5ff7712dfdcb7962b5fa5c922",
+        "properties.py": "804bc4247eb7705bc41cb2acf65be79a043b9e9e6e4f872105a27e53e717a2fc"
+      }
+    },
+    "salesforce": {
+      "required_fragments": {
+        "createSobjectRecord": true,
+        "deleteRelatedRecord": true,
+        "deleteSobjectRecord": true,
+        "find": true,
+        "getObjectSchema": true,
+        "getRelatedRecords": true,
+        "getUserInfo": true,
+        "listRecentSobjectRecords": true,
+        "object-name": true,
+        "relationship-path": true,
+        "sobject-name": true,
+        "soqlQuery": true,
+        "updateRelatedRecord": true,
+        "updateSobjectRecord": true
+      },
+      "sha256": "98892c64743beeb98ee16960749761f489d64b6002d38a42cfbd5dd24fd46fe3",
+      "source": "https://developer.salesforce.com/docs/platform/hosted-mcp-servers/guide/sobject-all.html"
+    }
+  }
+}
