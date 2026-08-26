@@ -502,7 +502,7 @@ size_categories:
 - `world/`: the four-surface offline MCP world and verifier.
 - `contracts/`: pinned contract metadata and exact published tool schemas.
 - `trajectories/`: accepted tool traces produced by the qualification run.
-- `reports/`: build, qualification, conformance, container, and model-run evidence.
+- `reports/`: build, qualification, MCP-conformance, and container-probe evidence.
 
 ## Objective release gates
 

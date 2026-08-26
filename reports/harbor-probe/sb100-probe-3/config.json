@@ -1,0 +1,16 @@
+{
+    "job_name": "sb100-probe-3",
+    "n_concurrent_trials": 1,
+    "environment": {
+        "type": "docker",
+        "force_build": true
+    },
+    "tasks": [
+        {
+            "path": "tasks/sb100-001-northwind-q3-commit"
+        },
+        {
+            "path": "tasks/sb100-051-oak-renewal-notice"
+        }
+    ]
+}
