@@ -154,11 +154,11 @@ def export(release: Path, output: Path) -> dict[str, Any]:
                 ],
                 "criterionWeights": task.spec["rubric_criteria"],
                 "scoring": {
-                    "criteriaPerTask": 281,
-                    "procedureWeight": 20,
-                    "stateWeight": 45,
-                    "changesWeight": 25,
-                    "briefWeight": 10,
+                    "criteriaPerTask": len(task.spec["rubric_criteria"]),
+                    "totalWeight": sum(
+                        criterion["weight"]
+                        for criterion in task.spec["rubric_criteria"]
+                    ),
                     "fullPassRequiresEveryCriterion": True,
                 },
             }
@@ -224,11 +224,13 @@ def export(release: Path, output: Path) -> dict[str, Any]:
             "version": build["version"],
             "tasks": 100,
             "families": 10,
-            "documents": 9_600,
-            "documentsPerTask": 96,
-            "referenceCallsPerTask": 163,
-            "mutationsPerTask": 12,
-            "criteriaPerTask": 281,
+            "documents": build["document_count"],
+            "documentsPerTask": 28,
+            "referenceCallsPerTask": build["reference_tool_calls_per_task"]["maximum"],
+            "referenceCallRange": build["reference_tool_calls_per_task"],
+            "mutationsPerTask": build["authorized_mutations_per_task"]["maximum"],
+            "mutationRange": build["authorized_mutations_per_task"],
+            "criteriaPerTask": 14,
             "deterministicVerifier": True,
             "exactDuplicateDocuments": build["exact_duplicate_documents"],
             "minimumDocumentBytes": build["minimum_document_bytes"],

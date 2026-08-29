@@ -456,23 +456,21 @@ def create_task_pack(
         "context_files": hf_context_paths,
         "rubric": {
             "type": "deterministic",
-            "required_document_reads": REQUIRED_TEXT_DOCUMENT_COUNT,
-            "metadata_checks": METADATA_CHECK_COUNT,
+            "required_document_reads": len(task.spec["required_document_paths"]),
+            "reference_document_reads": len(task.spec["reference_document_paths"]),
+            "metadata_checks": len(task.spec["metadata_check_paths"]),
             "authorized_mutations": len(task.spec["expected_changes"]),
             "required_deliverables": ["changes.json", "brief.md"],
-            "score_weights": {"procedure": 0.20, "state": 0.45, "changes": 0.25, "brief": 0.10},
-            "gates": [
-                "all_evidence_read_in_full",
-                "all_required_evidence_precedes_mutation",
-                "all_provider_evidence_precedes_mutation",
-                "vendor_evidence_cross_checked",
-                "entire_business_state_exact",
-                "authorized_mutations_each_called_once",
-                "no_delete_or_neighbor_mutation",
-                "exact_structured_change_log",
-                "fully_grounded_brief",
-                "deliverables_written_through_mcp",
-            ],
+            "score_weights": {
+                criterion["id"]: criterion["weight"] / 100
+                for criterion in task.spec["rubric_criteria"]
+            },
+            "gates": [criterion["id"] for criterion in task.spec["rubric_criteria"]],
+            "call_order_policy": (
+                "The reference trajectory is illustrative, not graded. Material identity, "
+                "authority, provider, and exception evidence must precede the dependent CRM "
+                "mutation; valid query shapes and the order of independent investigations are open."
+            ),
             "criteria": task.spec["rubric_criteria"],
             "decision_options": task.spec["decision_options"],
         },
@@ -710,7 +708,7 @@ configs:
 
 # {RELEASE_NAME}
 
-{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 28 independently inspectable assets across 11 native formats. The evidence—not a fixed quota—determines 5–12 authorized CRM mutations and 68–103 calls, including an exact post-write readback for every mutation.
+{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 28 independently inspectable assets across 11 native formats; 10–12 task-specific records are causally material and the remainder provide realistic corroboration, decoys, lineage, and surrounding context. The evidence—not a fixed mutation quota—determines 5–12 authorized CRM mutations and 68–103 reference calls, including a same-record post-write readback for every mutation.
 
 ## Public release
 
@@ -741,10 +739,10 @@ configs:
 | Unique tool-name sequences | 100/100 |
 | Unique semantic action graphs | 100/100 |
 | Authored causal decision rules | 100/100 unique |
-| Task-specific deterministic criteria | 301–420 |
+| Task-specific semantic milestones | 14 totaling 100 points; atomic evidence remains deterministic |
 | Precomputed answer objects in business evidence | 0 |
-| Evidence and provider reads before mutation | required |
-| Exact post-write readback per mutation | required |
+| Material evidence and provider reads before mutation | required; independent order and valid query shapes are open |
+| Same-record post-write readback per mutation | required |
 | Verifier network/model/clock/random calls | 0 |
 | Oracle and replay passes | 100/100 each |
 | False accepts across ten negative controls | 0 |

@@ -16,6 +16,7 @@ from salesbench.contracts import TOOLS_BY_SERVER, tool_definitions
 from .scoring import (
     aggregate_scores,
     canonical_json,
+    mutation_matches,
     score_brief,
     score_changes,
     score_state,
@@ -117,6 +118,7 @@ class SalesWorld:
             "arguments": trace_arguments,
             "ok": not bool(result.get("isError")),
             "mutation": mutation and not bool(result.get("isError")),
+            "attempted_mutation": mutation,
             "observation_sha256": sha256_text(text),
             "observation": text,
         }
@@ -834,9 +836,7 @@ class SalesWorld:
         provider_evidence_precedes_mutation = True
         for change in self.spec["expected_changes"]:
             mutation_index = first_index(
-                lambda entry, change=change: entry.get("server") == change["system"]
-                and entry.get("tool") == change["tool"]
-                and entry.get("arguments") == change["arguments"]
+                lambda entry, change=change: mutation_matches(entry, change)
             )
             evidence = change.get("prewrite_evidence") or {}
             required_paths = set(evidence.get("document_paths") or [])
@@ -879,12 +879,28 @@ class SalesWorld:
             ):
                 provider_evidence_precedes_mutation = False
                 break
+        def investigation_matches(
+            entry: dict[str, Any], required: dict[str, Any]
+        ) -> bool:
+            if (
+                entry.get("server") != required["server"]
+                or entry.get("tool") != required["name"]
+            ):
+                return False
+            searchable = (
+                canonical_json(entry.get("arguments", {}))
+                + " "
+                + str(entry.get("observation", ""))
+            ).casefold()
+            return all(
+                str(anchor).casefold() in searchable
+                for anchor in required.get("semantic_anchors", [])
+            )
+
         task_specific_investigation_completed = first_crm_mutation is not None and all(
             (
                 index := first_index(
-                    lambda entry, required=required: entry.get("server") == required["server"]
-                    and entry.get("tool") == required["name"]
-                    and entry.get("arguments") == required["arguments"]
+                    lambda entry, required=required: investigation_matches(entry, required)
                 )
             )
             is not None
@@ -892,7 +908,7 @@ class SalesWorld:
             for required in self.spec.get("required_investigation_calls", [])
         )
         procedure = {
-            "all_evidence_read_in_full": set(self.spec["required_document_paths"]) <= full_reads,
+            "material_evidence_read_in_full": set(self.spec["required_document_paths"]) <= full_reads,
             "custody_metadata_checked": set(self.spec["metadata_check_paths"]) <= info_paths,
             "filesystem_discovery_completed": {
                 ("filesystem", "list_allowed_directories"),
@@ -920,6 +936,10 @@ class SalesWorld:
             "all_gong_evidence_queried": required_gong_ids <= gong_record_ids,
             "all_required_evidence_precedes_mutation": all_required_evidence_precedes_mutation,
             "all_provider_evidence_precedes_mutation": provider_evidence_precedes_mutation,
+            "no_rejected_mutation": not any(
+                entry.get("attempted_mutation") and not entry.get("ok")
+                for entry in trace
+            ),
         }
         output_files = sorted(
             path.relative_to(self.output_root).as_posix()
@@ -966,6 +986,7 @@ class SalesWorld:
             state_scoring,
             changes_scoring,
             brief_scoring,
+            self.spec,
             successful_tool_calls=len(successful),
         )
         report = {
@@ -977,6 +998,7 @@ class SalesWorld:
             "reward_cap_reason": aggregate["cap_reason"],
             "category_scores": aggregate["category_scores"],
             "score_weights": aggregate["weights"],
+            "semantic_checks": aggregate["semantic_checks"],
             "criteria": {
                 "procedure": procedure,
                 "state": state_scoring,
