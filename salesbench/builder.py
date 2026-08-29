@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -327,7 +328,7 @@ def create_task_pack(
     record = {
         "task_id": task.task_id,
         "task_name": task.spine.title,
-        "world_id": "salesbench-multi-crm-mcp-v1",
+        "world_id": "salesbench-multi-crm-mcp-v2",
         "prompt": task.prompt,
         "context_files": hf_context_paths,
         "rubric": {
@@ -348,6 +349,8 @@ def create_task_pack(
                 "fully_grounded_brief",
                 "deliverables_written_through_mcp",
             ],
+            "criteria": task.spec["rubric_criteria"],
+            "decision_options": task.spec["decision_options"],
         },
         "gold_output": {
             "changes": task.reference["changes"],
@@ -456,6 +459,20 @@ def maximum_pair_similarity(values: Iterable[str]) -> dict[str, Any]:
     return {"maximum_jaccard_5_shingle": round(maximum, 6), "pair_indices": pair}
 
 
+def maximum_sequence_similarity(values: list[tuple[str, ...]]) -> dict[str, Any]:
+    maximum = 0.0
+    pair: list[int | None] = [None, None]
+    for left in range(len(values)):
+        for right in range(left + 1, len(values)):
+            score = SequenceMatcher(
+                a=values[left], b=values[right], autojunk=False
+            ).ratio()
+            if score > maximum:
+                maximum = score
+                pair = [left, right]
+    return {"maximum_sequence_match": round(maximum, 6), "pair_indices": pair}
+
+
 def dataset_card() -> str:
     return f"""---
 license: cc-by-4.0
@@ -484,7 +501,7 @@ configs:
 
 # {RELEASE_NAME}
 
-{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Every task has 96 production-style source records, 12 authorized CRM mutations, two deliverables, and a 163-call accepted MCP trajectory.
+{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request; the evidence room, CRM state, and embedded operating contract reveal the necessary investigation. Every task has 96 production-style source records, 281 task-specific deterministic criteria, 12 authorized CRM mutations, and its own accepted 163-call MCP trajectory.
 
 ## Public release
 
@@ -512,6 +529,8 @@ configs:
 | Documents per task | 96 |
 | Authorized mutations per task | 12 |
 | Reference MCP calls per task | 163 |
+| Unique tool-name sequences | 100/100 |
+| Task-specific deterministic criteria | 281 per task |
 | Verifier network/model/clock/random calls | 0 |
 | Oracle and replay passes | 100/100 each |
 | False accepts across six negative controls | 0 |
@@ -574,6 +593,8 @@ def _validate_report(report: dict[str, Any]) -> None:
         "prompt_similarity": report["prompt_uniqueness"]["maximum_jaccard_5_shingle"] < 0.80,
         "prompt_skeletons_all_unique": report["prompt_skeletons_unique"] == 100,
         "duplicate_prompts": report["exact_duplicate_prompts"] == 0,
+        "unique_reference_sequences": report["unique_reference_tool_name_sequences"] == 100,
+        "reference_sequence_similarity": report["reference_sequence_similarity"]["maximum_sequence_match"] < 0.95,
         "required_servers": report["required_mcp_servers"] == ["filesystem", "gong", "hubspot", "salesforce"],
     }
     rejected = [name for name, passed in failures.items() if not passed]
@@ -599,6 +620,7 @@ def build(output: Path) -> dict[str, Any]:
     document_sizes: list[int] = []
     prompts: list[str] = []
     servers: set[str] = set()
+    reference_sequences: list[tuple[str, ...]] = []
 
     for task in tasks:
         record, index_entry = create_task_pack(tasks_root, hf_root, task)
@@ -606,6 +628,9 @@ def build(output: Path) -> dict[str, Any]:
         index.append(index_entry)
         prompts.append(task.prompt)
         servers.update(call["server"] for call in task.reference["calls"])
+        reference_sequences.append(
+            tuple(f"{call['server']}.{call['name']}" for call in task.reference["calls"])
+        )
         for content in task.documents.values():
             document_hashes.add(hashlib.sha256(content.encode("utf-8")).hexdigest())
             document_sizes.append(len(content.encode("utf-8")))
@@ -655,6 +680,8 @@ def build(output: Path) -> dict[str, Any]:
         "authorized_mutations_per_task": TARGET_CHANGE_COUNT,
         "reference_tool_calls_per_task": MINIMUM_TOOL_CALLS,
         "reference_tool_calls_total": len(tasks) * MINIMUM_TOOL_CALLS,
+        "unique_reference_tool_name_sequences": len(set(reference_sequences)),
+        "reference_sequence_similarity": maximum_sequence_similarity(reference_sequences),
         "required_mcp_servers": sorted(servers),
         "tool_counts_by_server": {server: len(tools) for server, tools in TOOLS_BY_SERVER.items()},
         "prompt_uniqueness": maximum_pair_similarity(prompts),
@@ -683,6 +710,13 @@ def build(output: Path) -> dict[str, Any]:
     ):
         evidence = ROOT / "reports" / report_name
         if evidence.is_file():
+            try:
+                report_value = json.loads(evidence.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                report_value = {}
+            report_version = report_value.get("benchmark_version") or report_value.get("version")
+            if report_version and report_version != RELEASE_VERSION:
+                continue
             shutil.copy2(evidence, output / "reports" / report_name)
             shutil.copy2(evidence, hf_root / "reports" / report_name)
     write_json(output / "task-index.json", index)
@@ -699,7 +733,7 @@ def build(output: Path) -> dict[str, Any]:
         f'''[dataset]
 name = "{HARBOR_ORG}/{RELEASE_SLUG}"
 version = "{RELEASE_VERSION}"
-description = "100 synthetic Salesforce, HubSpot, Gong, and RevOps tasks with deterministic 163-call trajectories."
+description = "100 high-level sales operations requests with unique deterministic 163-call trajectories."
 authors = []
 keywords = ["sales", "salesforce", "hubspot", "gong", "mcp", "long-horizon"]
 '''

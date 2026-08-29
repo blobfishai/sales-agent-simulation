@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import unittest
 from collections import Counter
 
@@ -38,6 +39,38 @@ class CatalogGenerationTests(unittest.TestCase):
                 {call["server"] for call in task.reference["calls"]},
                 {"filesystem", "salesforce", "hubspot", "gong"},
             )
+            self.assertEqual(len(task.spec["decision_options"]), 3)
+            self.assertEqual(sum(option["selected"] for option in task.spec["decision_options"]), 1)
+            self.assertEqual(len(task.spec["rubric_criteria"]), 281)
+
+    def test_employee_requests_are_high_level_and_reference_workflows_are_unique(self) -> None:
+        prompts = [task.prompt for task in self.tasks]
+        sequences = [
+            tuple(f"{call['server']}.{call['name']}" for call in task.reference["calls"])
+            for task in self.tasks
+        ]
+        self.assertEqual(len(set(prompts)), 100)
+        self.assertEqual(len(set(sequences)), 100)
+        for prompt in prompts:
+            self.assertGreaterEqual(len(prompt.split()), 45)
+            self.assertLessEqual(len(prompt.split()), 120)
+            self.assertIsNone(
+                re.search(
+                    r"required procedure|return exactly|write exactly|evidence room contains exactly|this is task|^\s*\d+\.",
+                    prompt,
+                    re.IGNORECASE | re.MULTILINE,
+                )
+            )
+
+    def test_operating_contract_is_discoverable_inside_each_evidence_room(self) -> None:
+        for task in self.tasks:
+            deliverable_records = [
+                content
+                for relative, content in task.documents.items()
+                if relative.startswith("12_deliverables/")
+            ]
+            self.assertEqual(len(deliverable_records), 8)
+            self.assertTrue(all("workflow_contract" in content for content in deliverable_records))
 
     def test_seeded_documents_are_deep_and_globally_unique(self) -> None:
         contents = [content for task in self.tasks for content in task.documents.values()]

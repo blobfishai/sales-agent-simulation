@@ -18,7 +18,7 @@ from salesbench.generation import generate_all
 
 
 HF_BASE = "https://huggingface.co/datasets/SamuelChien821/salesbench-100"
-SAMPLE_ORDINALS = {1, 11, 21, 31, 41, 51, 61, 71, 81, 91}
+SAMPLE_ORDINALS = set(range(1, 101))
 
 
 def compact(value: str, limit: int = 300) -> str:
@@ -148,6 +148,11 @@ def export(release: Path, output: Path) -> dict[str, Any]:
                     for change in task.spec["expected_changes"]
                 ],
                 "assets": asset_rows(task),
+                "options": task.spec["decision_options"],
+                "gradedCriteria": [
+                    criterion["description"] for criterion in task.spec["rubric_criteria"]
+                ],
+                "criterionWeights": task.spec["rubric_criteria"],
                 "scoring": {
                     "criteriaPerTask": 281,
                     "procedureWeight": 20,
@@ -181,6 +186,15 @@ def export(release: Path, output: Path) -> dict[str, Any]:
     model_report_path = release / "reports" / "model-evaluation.json"
     if model_report_path.is_file():
         model_report = json.loads(model_report_path.read_text(encoding="utf-8"))
+        if (
+            model_report.get("benchmark_version") != build["version"]
+            or model_report.get("coverage", {}).get("full_benchmark_run") is not True
+            or model_report.get("coverage", {}).get("task_count") != 100
+        ):
+            model_report = None
+    else:
+        model_report = None
+    if model_report is not None:
         result = model_report["result"]
         model = model_report["model"]
         coverage = model_report["coverage"]
@@ -200,7 +214,7 @@ def export(release: Path, output: Path) -> dict[str, Any]:
                 "brief": round(categories["brief"] * 100, 4),
                 "averageCalls": result["successful_tool_calls"],
                 "averageCost": result["cost_usd"],
-                "note": "Single-task measured run; strict failure",
+                "note": "Full 100-task measured run over this exact release.",
             }
         )
     payload = {
