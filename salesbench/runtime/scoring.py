@@ -69,6 +69,33 @@ def expected_state(initial_state: dict[str, Any], changes: list[dict[str, Any]])
     return state
 
 
+def mutation_matches(entry: dict[str, Any], change: dict[str, Any]) -> bool:
+    """Match the authorized business mutation without requiring byte-identical args."""
+
+    if (
+        not entry.get("ok")
+        or entry.get("server") != change["system"]
+        or entry.get("tool") != change["tool"]
+    ):
+        return False
+    actual = entry.get("arguments")
+    if not isinstance(actual, dict):
+        return False
+    expected = change["arguments"]
+    body_key = "body" if change["system"] == "salesforce" else "properties"
+    if any(
+        actual.get(key) != value
+        for key, value in expected.items()
+        if key != body_key
+    ):
+        return False
+    actual_body = actual.get(body_key)
+    expected_body = expected.get(body_key)
+    return isinstance(actual_body, dict) and isinstance(expected_body, dict) and all(
+        actual_body.get(field) == value for field, value in expected_body.items()
+    )
+
+
 def _postwrite_readback_passed(
     trace: list[dict[str, Any]], change: dict[str, Any]
 ) -> bool:
@@ -77,21 +104,17 @@ def _postwrite_readback_passed(
         (
             index
             for index, entry in enumerate(successful)
-            if entry.get("server") == change["system"]
-            and entry.get("tool") == change["tool"]
-            and entry.get("arguments") == change["arguments"]
+            if mutation_matches(entry, change)
         ),
         None,
     )
     evidence = change.get("postwrite_evidence") or {}
-    readback_arguments = evidence.get("arguments")
-    if mutation_index is None or not isinstance(readback_arguments, dict):
+    if mutation_index is None:
         return False
     for entry in successful[mutation_index + 1 :]:
         if (
             entry.get("server") != evidence.get("server")
             or entry.get("tool") != evidence.get("name")
-            or entry.get("arguments") != readback_arguments
         ):
             continue
         try:
@@ -100,15 +123,28 @@ def _postwrite_readback_passed(
             return False
         if change["system"] == "salesforce":
             records = observation.get("records", []) if isinstance(observation, dict) else []
-            value = records[0].get(change["field"]) if records else None
+            record = next(
+                (
+                    row
+                    for row in records
+                    if str(row.get("Id")) == str(change["record_id"])
+                ),
+                None,
+            )
+            value = record.get(change["field"]) if record else None
         else:
             properties = (
                 observation.get("properties", {})
                 if isinstance(observation, dict)
                 else {}
             )
+            if str(observation.get("id", change["record_id"])) != str(
+                change["record_id"]
+            ):
+                continue
             value = properties.get(change["field"])
-        return value == change["after"]
+        if value == change["after"]:
+            return True
     return False
 
 
@@ -142,9 +178,7 @@ def score_state(
         matching_calls = [
             entry
             for entry in successful
-            if entry.get("server") == change["system"]
-            and entry.get("tool") == change["tool"]
-            and entry.get("arguments") == change["arguments"]
+            if mutation_matches(entry, change)
         ]
         called_once = len(matching_calls) == 1
         readback_ok = _postwrite_readback_passed(trace, change)
@@ -367,11 +401,196 @@ def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def semantic_checks(
+    procedure: dict[str, bool],
+    state: dict[str, Any],
+    changes: dict[str, Any],
+    brief: dict[str, Any],
+    spec: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = {
+        "procedure": procedure,
+        "state": state["criteria"],
+        "changes": changes["criteria"],
+        "brief": brief["criteria"],
+    }
+    groups: dict[str, list[tuple[str, str]]] = {
+        criterion["id"]: [] for criterion in spec["rubric_criteria"]
+    }
+
+    def assign(milestone_id: str, component: str, criterion_id: str) -> None:
+        if milestone_id not in groups:
+            raise ValueError(f"unknown semantic milestone: {milestone_id}")
+        groups[milestone_id].append((component, criterion_id))
+
+    for criterion_id in (
+        "filesystem_discovery_completed",
+        "custody_metadata_checked",
+        "salesforce_discovery_completed",
+        "hubspot_discovery_completed",
+    ):
+        assign("investigation.scope", "procedure", criterion_id)
+    for criterion_id in (
+        "material_evidence_read_in_full",
+        "all_required_evidence_precedes_mutation",
+    ):
+        assign("investigation.evidence", "procedure", criterion_id)
+    assign(
+        "investigation.identity",
+        "procedure",
+        "task_specific_investigation_completed",
+    )
+    for criterion_id in (
+        "all_salesforce_evidence_queried",
+        "all_hubspot_evidence_retrieved",
+        "all_gong_evidence_queried",
+        "all_provider_evidence_precedes_mutation",
+    ):
+        assign("investigation.provider_correlation", "procedure", criterion_id)
+    assign(
+        "verification.readback",
+        "procedure",
+        "all_mutations_verified_by_readback",
+    )
+    for criterion_id in (
+        "exact_deliverable_set",
+        "deliverables_written_through_mcp",
+        "no_rejected_mutation",
+    ):
+        assign("execution.delivery", "procedure", criterion_id)
+
+    for criterion_id in state["criteria"]:
+        if criterion_id.endswith(".initial_value"):
+            milestone_id = "investigation.provider_correlation"
+        elif criterion_id.endswith(
+            (".target_value", ".authorized_fields", ".exactly_one_authorized_call")
+        ):
+            milestone_id = "state.primary"
+        elif criterion_id.endswith(".postwrite_readback"):
+            milestone_id = "verification.readback"
+        elif criterion_id in {
+            "entire_business_state_exact",
+            "no_delete_tool_succeeded",
+            "gong_remained_read_only",
+        }:
+            milestone_id = "containment.scope"
+        else:
+            raise ValueError(f"unmapped state criterion: {criterion_id}")
+        assign(milestone_id, "state", criterion_id)
+
+    change_authority_fields = {
+        "reason",
+        "primary_source",
+        "corroborating_source",
+        "gong_evidence_id",
+        "owner",
+        "deadline",
+        "evidence_sources",
+    }
+    change_decision_fields = {
+        "decision_method",
+        "decision_inputs",
+        "decision_explanation",
+        "selected_option_id",
+    }
+    hold_authority_fields = {
+        "blocking_condition",
+        "primary_source",
+        "corroborating_source",
+    }
+    for criterion_id in changes["criteria"]:
+        if criterion_id == "changes_is_object" or criterion_id.startswith("top_level."):
+            milestone_id = "deliverable.decision_summary"
+        elif criterion_id in {"changes_exact_count", "change_ids_unique"}:
+            milestone_id = "deliverable.changes"
+        elif criterion_id in {"holds_exact_count", "hold_ids_unique"}:
+            milestone_id = "deliverable.holds"
+        elif criterion_id.startswith("decision_summary."):
+            milestone_id = "decision.portfolio"
+        elif criterion_id.startswith("CHG-"):
+            field = criterion_id.rsplit(".", 1)[-1]
+            if field in change_authority_fields:
+                milestone_id = "investigation.authority"
+            elif field in change_decision_fields:
+                milestone_id = "decision.portfolio"
+            else:
+                milestone_id = "deliverable.changes"
+        elif criterion_id.startswith("HLD-"):
+            field = criterion_id.rsplit(".", 1)[-1]
+            milestone_id = (
+                "investigation.authority"
+                if field in hold_authority_fields
+                else "deliverable.holds"
+            )
+        else:
+            raise ValueError(f"unmapped changes criterion: {criterion_id}")
+        assign(milestone_id, "changes", criterion_id)
+
+    for criterion_id in brief["criteria"]:
+        if criterion_id == "decision_and_alternatives":
+            milestone_id = "decision.portfolio"
+        elif criterion_id == "forbidden_claims_absent":
+            milestone_id = "containment.scope"
+        else:
+            milestone_id = "deliverable.brief"
+        assign(milestone_id, "brief", criterion_id)
+
+    all_raw = {
+        (component, criterion_id)
+        for component, criteria in raw.items()
+        for criterion_id in criteria
+    }
+    assigned = [reference for references in groups.values() for reference in references]
+    if len(assigned) != len(set(assigned)):
+        raise ValueError("one atomic criterion was assigned to multiple semantic milestones")
+    unassigned = sorted(all_raw - set(assigned))
+    unknown = sorted(set(assigned) - all_raw)
+    if unassigned or unknown:
+        raise ValueError(
+            f"semantic rubric mapping mismatch; unassigned={unassigned}, unknown={unknown}"
+        )
+
+    rubric_by_id = {criterion["id"]: criterion for criterion in spec["rubric_criteria"]}
+    checks: list[dict[str, Any]] = []
+    for milestone_id, references in groups.items():
+        if not references:
+            raise ValueError(f"semantic milestone has no atomic evidence: {milestone_id}")
+        passed_count = sum(raw[component][criterion_id] for component, criterion_id in references)
+        fraction = passed_count / len(references)
+        milestone = rubric_by_id[milestone_id]
+        checks.append(
+            {
+                "id": milestone_id,
+                "category": milestone["category"],
+                "description": milestone["description"],
+                "weight": float(milestone["weight"]),
+                "earned_weight": round(float(milestone["weight"]) * fraction, 6),
+                "passed": passed_count == len(references),
+                "evidence": {
+                    "passed_criteria": passed_count,
+                    "total_criteria": len(references),
+                    "subchecks": [
+                        {
+                            "component": component,
+                            "id": criterion_id,
+                            "passed": bool(raw[component][criterion_id]),
+                        }
+                        for component, criterion_id in references
+                    ],
+                },
+            }
+        )
+    if sum(check["weight"] for check in checks) != 100.0:
+        raise ValueError("semantic milestone weights must total 100")
+    return checks
+
+
 def aggregate_scores(
     procedure: dict[str, bool],
     state: dict[str, Any],
     changes: dict[str, Any],
     brief: dict[str, Any],
+    spec: dict[str, Any],
     *,
     successful_tool_calls: int = -1,
 ) -> dict[str, Any]:
@@ -381,8 +600,11 @@ def aggregate_scores(
         "changes": changes["score"],
         "brief": brief["score"],
     }
-    weights = {"procedure": 0.20, "state": 0.45, "changes": 0.25, "brief": 0.10}
-    uncapped = sum(scores[key] * weights[key] for key in scores)
+    checks = semantic_checks(procedure, state, changes, brief, spec)
+    semantic_weights = {
+        check["id"]: round(float(check["weight"]) / 100, 6) for check in checks
+    }
+    uncapped = sum(float(check["earned_weight"]) for check in checks) / 100
     reward = uncapped
     cap_reason = None
     if successful_tool_calls == 0:
@@ -399,12 +621,13 @@ def aggregate_scores(
     elif not all(procedure.values()):
         reward = min(reward, 0.49)
         cap_reason = "required_workflow_procedure_incomplete"
-    passed = all(procedure.values()) and state["passed"] and changes["passed"] and brief["passed"]
+    passed = all(check["passed"] for check in checks)
     return {
         "passed": passed,
         "reward": round(reward, 6),
         "uncapped_reward": round(uncapped, 6),
         "cap_reason": cap_reason,
         "category_scores": scores,
-        "weights": weights,
+        "weights": semantic_weights,
+        "semantic_checks": checks,
     }

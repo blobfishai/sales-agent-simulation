@@ -173,36 +173,32 @@ def wrong_evidence(
 ) -> None:
     """Reach the exact business result after substituting irrelevant evidence."""
 
-    required = next(
-        candidate
-        for candidate in spec["required_investigation_calls"]
-        if sum(
+    required = min(
+        spec["required_investigation_calls"],
+        key=lambda candidate: sum(
             call["server"] == candidate["server"]
             and call["name"] == candidate["name"]
-            and call["arguments"] == candidate["arguments"]
             for call in reference["calls"]
-        )
-        == 1
+        ),
     )
     replaced = False
     for call in reference["calls"]:
         if (
-            not replaced
-            and call["server"] == required["server"]
+            call["server"] == required["server"]
             and call["name"] == required["name"]
-            and call["arguments"] == required["arguments"]
         ):
-            checked_call(
-                world,
-                "filesystem",
-                "search_files",
-                {
-                    "path": "/workspace/documents",
-                    "pattern": "**/*.obsolete",
-                    "excludePatterns": [],
-                },
-            )
-            replaced = True
+            if not replaced:
+                checked_call(
+                    world,
+                    "filesystem",
+                    "search_files",
+                    {
+                        "path": "/workspace/documents",
+                        "pattern": "**/*.obsolete",
+                        "excludePatterns": [],
+                    },
+                )
+                replaced = True
             continue
         checked_call(world, call["server"], call["name"], call["arguments"])
     if not replaced:

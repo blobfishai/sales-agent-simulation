@@ -52,7 +52,83 @@ class WorldTests(unittest.TestCase):
             reports.append(world.verify(verification_token(self.task.task_id)))
         self.assertTrue(reports[0]["passed"])
         self.assertEqual(reports[0]["reward"], 1.0)
+        self.assertEqual(len(reports[0]["semantic_checks"]), 14)
+        self.assertEqual(
+            sum(check["weight"] for check in reports[0]["semantic_checks"]),
+            100.0,
+        )
+        self.assertTrue(all(check["passed"] for check in reports[0]["semantic_checks"]))
         self.assertEqual(reports[0], reports[1])
+
+    def test_reference_can_skip_surrounding_sources_and_queries(self) -> None:
+        world = self.world("material-only")
+        required_investigations = {
+            (
+                call["server"],
+                call["name"],
+                json.dumps(call["arguments"], sort_keys=True, separators=(",", ":")),
+            )
+            for call in self.task.spec["required_investigation_calls"]
+        }
+        skipped = 0
+        for call in self.task.reference["calls"]:
+            arguments = call["arguments"]
+            if (
+                call["server"] == "filesystem"
+                and call["name"] == "read_text_file"
+                and arguments.get("path") not in self.task.spec["required_document_paths"]
+            ):
+                skipped += 1
+                continue
+            if (
+                call["server"] == "filesystem"
+                and call["name"] == "get_file_info"
+                and arguments.get("path") not in self.task.spec["metadata_check_paths"]
+            ):
+                skipped += 1
+                continue
+            signature = (
+                call["server"],
+                call["name"],
+                json.dumps(arguments, sort_keys=True, separators=(",", ":")),
+            )
+            if call.get("purpose") and signature not in required_investigations:
+                skipped += 1
+                continue
+            result = world.call_tool(call["server"], call["name"], arguments)
+            self.assertFalse(result["isError"])
+
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertGreaterEqual(skipped, 15)
+        self.assertTrue(report["passed"])
+        self.assertEqual(report["reward"], 1.0)
+
+    def test_material_investigation_accepts_a_semantically_equivalent_query(self) -> None:
+        world = self.world("flexible-investigation")
+        target = self.task.spec["required_investigation_calls"][0]
+        replaced = False
+        for call in self.task.reference["calls"]:
+            arguments = call["arguments"]
+            if (
+                not replaced
+                and call["server"] == target["server"]
+                and call["name"] == target["name"]
+                and arguments == target["arguments"]
+            ):
+                arguments = {
+                    **arguments,
+                    "limit": 50,
+                    "properties": ["salesbench_key", "forecast_status"],
+                }
+                replaced = True
+            result = world.call_tool(call["server"], call["name"], arguments)
+            self.assertFalse(result["isError"])
+        self.assertTrue(replaced)
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertTrue(report["passed"])
+        self.assertTrue(
+            report["criteria"]["procedure"]["task_specific_investigation_completed"]
+        )
 
     def test_outputs_only_are_rejected(self) -> None:
         world = self.world("shortcut")
@@ -140,6 +216,40 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["reward"], 0.0)
         self.assertEqual(report["reward_cap_reason"], "no_mcp_interaction")
+
+    def test_failed_read_is_recoverable_but_rejected_mutation_is_not(self) -> None:
+        read_world = self.world("recover-read")
+        invalid_read = read_world.call_tool("salesforce", "soqlQuery", {})
+        self.assertTrue(invalid_read["isError"])
+        for call in self.task.reference["calls"]:
+            read_world.call_tool(call["server"], call["name"], call["arguments"])
+        read_report = read_world.verify(verification_token(self.task.task_id))
+        self.assertTrue(read_report["passed"])
+        self.assertTrue(read_report["criteria"]["procedure"]["no_rejected_mutation"])
+
+        mutation_world = self.world("reject-mutation")
+        change = self.task.spec["expected_changes"][0]
+        invalid_arguments = {
+            **change["arguments"],
+            "id": f"{change['record_id']}-OUT-OF-SCOPE",
+        }
+        invalid_mutation = mutation_world.call_tool(
+            change["system"], change["tool"], invalid_arguments
+        )
+        self.assertTrue(invalid_mutation["isError"])
+        for call in self.task.reference["calls"]:
+            mutation_world.call_tool(call["server"], call["name"], call["arguments"])
+        mutation_report = mutation_world.verify(verification_token(self.task.task_id))
+        self.assertFalse(mutation_report["passed"])
+        self.assertFalse(
+            mutation_report["criteria"]["procedure"]["no_rejected_mutation"]
+        )
+        execution = next(
+            check
+            for check in mutation_report["semantic_checks"]
+            if check["id"] == "execution.delivery"
+        )
+        self.assertFalse(execution["passed"])
 
     def test_unauthorized_delete_fails_verification(self) -> None:
         world = self.world("delete")

@@ -22,7 +22,7 @@ from .contracts import CONTRACT_PINS
 from .decision_specs import DECISION_RULES, validate_decision_rules
 
 
-RELEASE_VERSION = "3.2.0"
+RELEASE_VERSION = "3.3.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
 FIXED_XLSX_ZIP_TIMESTAMP = (2026, 8, 26, 12, 0, 0)
 DOCUMENT_COUNT = 28
@@ -2877,6 +2877,104 @@ def _decision_options(
     ]
 
 
+def _material_document_paths(
+    changes: list[dict[str, Any]],
+    holds: list[dict[str, Any]],
+) -> list[str]:
+    """Return evidence that actually controls a change or an explicit hold."""
+
+    paths = {
+        str(path)
+        for change in changes
+        for path in change.get("prewrite_evidence", {}).get("document_paths", [])
+    }
+    paths.update(
+        str(path)
+        for hold in holds
+        for path in (hold["primary_source"], hold["corroborating_source"])
+    )
+    if not 8 <= len(paths) <= 14:
+        raise ValueError(f"expected 8-14 material evidence records, got {len(paths)}")
+    return sorted(paths)
+
+
+def _investigation_slot(purpose: str) -> str:
+    lowered = purpose.casefold()
+    if any(value in lowered for value in ("identity", "deal-to-company", "portfolio-key")):
+        return "identity"
+    if any(value in lowered for value in ("authority", "capacity")):
+        return "authority"
+    if any(value in lowered for value in ("scope", "boundary", "containment", "population")):
+        return "scope"
+    if any(value in lowered for value in ("corroboration", "buyer-evidence", "conversation-backed")):
+        return "corroboration"
+    return "custody"
+
+
+def _semantic_investigation_anchors(arguments: dict[str, Any]) -> list[str]:
+    anchored: list[str] = []
+    fallbacks: list[str] = []
+
+    def walk(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                walk(child, str(child_key))
+            return
+        if isinstance(value, list):
+            for child in value:
+                walk(child, key)
+            return
+        if not isinstance(value, (str, int)) or isinstance(value, bool):
+            return
+        text = str(value)
+        if re.search(
+            r"(?:SBP-\d|(?:001|003|006|00Q|0Q0|00T|00v)SB|^8\d{6,}$|^ws-\d)",
+            text,
+        ):
+            anchored.append(text)
+        elif key in {
+            "object_type",
+            "object-name",
+            "sobject-name",
+            "relationship-path",
+            "pattern",
+        }:
+            fallbacks.append(text)
+
+    walk(arguments)
+    values = anchored or fallbacks
+    return list(dict.fromkeys(values))[:3]
+
+
+def _material_investigation_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    candidates = [call for call in calls if call.get("purpose")]
+    by_slot: dict[str, dict[str, Any]] = {}
+    for call in candidates:
+        by_slot.setdefault(_investigation_slot(str(call["purpose"])), call)
+    selected = [
+        by_slot[slot]
+        for slot in ("identity", "authority", "scope", "corroboration", "custody")
+        if slot in by_slot
+    ]
+    for call in candidates:
+        if len(selected) >= 5:
+            break
+        if call not in selected:
+            selected.append(call)
+    if len(selected) < 4:
+        raise ValueError(f"expected at least four material investigations, got {len(selected)}")
+    return [
+        {
+            "server": call["server"],
+            "name": call["name"],
+            "arguments": deepcopy(call["arguments"]),
+            "purpose": call["purpose"],
+            "semantic_anchors": _semantic_investigation_anchors(call["arguments"]),
+        }
+        for call in selected
+    ]
+
+
 def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
     """Explain the causal business proof, not merely the final API calls."""
 
@@ -2895,7 +2993,8 @@ def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
             f"hold the other {spec['expected_hold_count']} rows."
         ),
         "investigation": (
-            f"The model must inventory all {len(spec['required_document_paths'])} multi-record assets, "
+            f"The model must identify the {len(spec['required_document_paths'])} material records inside "
+            f"the {len(spec['agent_visible_document_paths'])}-asset evidence room, "
             "join each portfolio key across identity, operating observation, authority, governed "
             "transition, live-system index, and exception evidence, then inspect the corresponding "
             f"live records in Salesforce, HubSpot, and Gong. Governed targets: {', '.join(objects)}."
@@ -2935,152 +3034,33 @@ def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Describe every executable criterion in the deterministic verifier.
+    """Describe stable business milestones while atomic checks remain executable."""
 
-    These descriptions are generated from immutable task IDs, record IDs,
-    fields, and sources.  They are the public explanation of the verifier, not
-    a gold call-order recipe.
-    """
-
-    rows: list[dict[str, Any]] = []
-
-    def add(category: str, criterion_id: str, description: str) -> None:
-        rows.append({
-            "id": f"{category}.{criterion_id}",
-            "category": category,
-            "description": description,
-        })
-
-    procedure = {
-        "all_evidence_read_in_full": (
-            f"Read all {len(spec['required_document_paths'])} task-scoped source records in full before relying on them."
-        ),
-        "custody_metadata_checked": (
-            f"Inspect custody metadata for the {len(spec['metadata_check_paths'])} designated source records."
-        ),
-        "filesystem_discovery_completed": "Inventory, search, and traverse the released evidence room.",
-        "salesforce_discovery_completed": "Identify the Salesforce user and inspect the relevant object contract.",
-        "hubspot_discovery_completed": "Inspect the HubSpot account, deal schema, and active pipelines.",
-        "task_specific_investigation_completed": (
-            "Before changing CRM state, complete this task's distinct identity, association, owner, "
-            "scope, and corroboration checks: " + "; ".join(spec["investigation_purposes"]) + "."
-        ),
-        "all_salesforce_evidence_queried": "Query the Salesforce record corresponding to every proposed portfolio correction.",
-        "all_hubspot_evidence_retrieved": "Retrieve the HubSpot record corresponding to every proposed portfolio correction.",
-        "all_gong_evidence_queried": "Use the permitted Gong deal insight for every proposed portfolio correction.",
-        "all_required_evidence_precedes_mutation": (
-            "Read the identity, operating, authority, policy, live-system index, and exception records "
-            "before the first CRM mutation."
-        ),
-        "all_provider_evidence_precedes_mutation": (
-            "For each changed record, inspect its live Salesforce, HubSpot, and permitted Gong evidence "
-            "before changing that record."
-        ),
-        "all_mutations_verified_by_readback": (
-            "After every CRM mutation, retrieve that exact immutable record again and observe the "
-            "derived field at its intended value."
-        ),
-        "exact_deliverable_set": "Leave only changes.json and brief.md in the output workspace.",
-        "deliverables_written_through_mcp": "Create both final deliverables through the filesystem MCP surface.",
-    }
-    for criterion_id, description in procedure.items():
-        add("procedure", criterion_id, description)
-
-    for change in spec["expected_changes"]:
-        prefix = change["id"]
-        target = f"{change['system']} {change['object_type']} {change['record_id']} field {change['field']}"
-        add("state", f"{prefix}.initial_value", f"Confirm {target} began as {change['before']!r}.")
-        add("state", f"{prefix}.target_value", f"Leave {target} at the supported value {change['after']!r}.")
-        add("state", f"{prefix}.authorized_fields", f"Change only the provider fields authorized for {prefix} on {change['record_id']}.")
-        add("state", f"{prefix}.exactly_one_authorized_call", f"Apply the authorized {change['tool']} mutation for {prefix} exactly once.")
-        add(
-            "state",
-            f"{prefix}.postwrite_readback",
-            f"Read {target} after the mutation and verify the observed value is {change['after']!r}.",
-        )
-    add(
-        "state",
-        "entire_business_state_exact",
-        (
-            f"Choose the evidence-backed records: all {spec['expected_change_count']} supported changes land "
-            "and every held or neighboring record remains byte-for-byte unchanged."
-        ),
-    )
-    add("state", "no_delete_tool_succeeded", "Complete the work without deleting any CRM record.")
-    add("state", "gong_remained_read_only", "Keep Gong read-only throughout the workflow.")
-
-    add("changes", "changes_is_object", "Produce changes.json as a JSON object.")
-    add("changes", "changes_exact_count", f"Record exactly {spec['expected_change_count']} supported changes in changes.json.")
-    add("changes", "change_ids_unique", "Use every authorized change ID once and only once.")
-    for field in ("schema_version", "task_id", "title", "company", "as_of"):
-        add("changes", f"top_level.{field}", f"Set changes.json top-level {field} to this task's exact released value.")
-    for field, expected in spec["expected_decision_summary"].items():
-        add(
-            "changes",
-            f"decision_summary.{field}",
-            f"Report the derived decision summary field {field} as {expected!r} after evaluating all three approaches.",
-        )
-    change_fields = (
-        "id", "system", "object_type", "record_id", "operation", "field", "before", "after",
-        "reason", "primary_source", "corroborating_source", "gong_evidence_id", "owner", "deadline",
-        "portfolio_key", "value_kind", "decision_method", "decision_inputs",
-        "decision_explanation", "selected_option_id", "evidence_sources",
-    )
-    for change in spec["expected_changes"]:
-        add("changes", f"{change['id']}.present", f"Include an auditable row for {change['id']} ({change['portfolio_key']}).")
-        for field in change_fields:
-            add(
-                "changes",
-                f"{change['id']}.{field}",
-                f"Ground {change['id']}'s {field} in the released record for {change['record_id']} and its controlling sources.",
-            )
-    add(
-        "changes",
-        "holds_exact_count",
-        f"Report exactly {spec['expected_hold_count']} unresolved portfolio records without mutating them.",
-    )
-    hold_fields = (
-        "id", "portfolio_key", "account_name", "blocking_condition", "primary_source",
-        "corroborating_source", "owner", "deadline", "required_next_step",
-    )
-    for hold in spec["expected_holds"]:
-        add(
-            "changes",
-            f"{hold['id']}.present",
-            f"Identify {hold['portfolio_key']} as held because of {hold['blocking_condition']}.",
-        )
-        for field in hold_fields:
-            add(
-                "changes",
-                f"{hold['id']}.{field}",
-                f"Ground held-case {hold['id']}'s {field} in its exception and corroborating source.",
-            )
-
-    for section in spec["brief_sections"]:
-        add("brief", f"section.{section}", f"Include the {section!r} decision section in brief.md.")
-    for change in spec["expected_changes"]:
-        add(
-            "brief",
-            f"change.{change['id']}",
-            f"Explain {change['id']} with portfolio key {change['portfolio_key']}, record {change['record_id']}, "
-            f"field transition {change['before']!r} to {change['after']!r}, both source paths, owner, and deadline.",
-        )
-    add(
-        "brief",
-        "decision_and_alternatives",
-        "Name the selected evidence-backed option, the rejected alternatives, the derivation method, and the actionable/held counts.",
-    )
-    for hold in spec["expected_holds"]:
-        add(
-            "brief",
-            f"hold.{hold['id']}",
-            f"Explain why {hold['portfolio_key']} stayed unchanged, cite both sources, and state its owner, deadline, and next step.",
-        )
-    add("brief", "forbidden_claims_absent", "Do not claim that Gong changed, expose private transcript text, invent approval, or report a forbidden bulk action.")
-
-    if len(rows) < 40:
-        raise ValueError(f"expected at least 40 rubric criteria, got {len(rows)}")
-    return rows
+    selected = spec["expected_decision_summary"]["selected_option_id"]
+    method = spec["expected_decision_summary"]["method"]
+    systems = ", ".join(sorted({change["system"] for change in spec["expected_changes"]}))
+    rows = [
+        ("investigation.scope", "investigation", 5, f"Establish {spec['task_id']} as of {spec['as_of']}, inventory the released evidence room, and identify the live Salesforce and HubSpot object contracts without crossing into neighboring portfolio records."),
+        ("investigation.evidence", "investigation", 9, f"Find and reconcile the {len(spec['required_document_paths'])} material identity, operating, authority, policy, and exception records inside the larger evidence room before relying on a recommendation."),
+        ("investigation.identity", "investigation", 7, "Resolve cross-system portfolio keys, account or deal associations, active ownership, and record identity through task-specific searches; valid query shapes and investigation order are open."),
+        ("investigation.authority", "investigation", 7, f"Separate observations from authority under {method!r}, reject pending, conflicting, ambiguous, or superseded evidence, and preserve the supported owners and deadlines."),
+        ("investigation.provider_correlation", "investigation", 10, f"Correlate every proposed change against its immutable Salesforce, HubSpot, and permitted Gong evidence before mutating {systems}; do not infer live state from files alone."),
+        ("decision.portfolio", "decision", 10, f"Evaluate all three released approaches, choose {selected!r} from the joined evidence, and derive exactly {spec['expected_change_count']} actionable and {spec['expected_hold_count']} held portfolio rows."),
+        ("state.primary", "state", 16, f"Persist exactly the {spec['expected_change_count']} authorized CRM field transitions on their immutable record IDs, once each, with provider-critical values supported by the evidence."),
+        ("verification.readback", "verification", 6, "After every CRM mutation, retrieve the same immutable record and observe the intended persisted field value rather than trusting the acknowledgement."),
+        ("containment.scope", "containment", 8, f"Keep all {spec['expected_hold_count']} held rows, neighboring records, unrelated fields, and Gong state unchanged; complete without deletion or a forbidden claim."),
+        ("deliverable.decision_summary", "answer", 5, f"Produce a task-scoped decision summary with the exact selected option, method, alternatives, and actionable-versus-held counts for {spec['company']}."),
+        ("deliverable.changes", "answer", 7, "Provide one auditable structured row per supported change, including immutable identity, before/after value, derivation inputs, sources, owner, and deadline."),
+        ("deliverable.holds", "answer", 5, "Provide one auditable row per held case with its evidence-backed blocker, corroboration, owner, deadline, and required next step."),
+        ("deliverable.brief", "answer", 3, "Write a concise executive handoff that explains the decision, alternatives, authorized changes, unresolved holds, control confirmation, and next operating cadence."),
+        ("execution.delivery", "execution", 2, "Leave only changes.json and brief.md, write both through the filesystem MCP, and complete without a rejected state-changing call."),
+    ]
+    if len(rows) != 14 or sum(row[2] for row in rows) != 100:
+        raise ValueError("semantic rubric must contain 14 milestones totaling 100 points")
+    return [
+        {"id": criterion_id, "category": category, "weight": weight, "description": description}
+        for criterion_id, category, weight, description in rows
+    ]
 
 
 def build_prompt(
@@ -3188,15 +3168,15 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         str(PurePosixPath("/workspace/documents") / relative)
         for relative in sorted(documents)
     ]
-    required_document_paths = [
+    reference_document_paths = [
         str(PurePosixPath("/workspace/documents") / relative)
         for relative, content in sorted(documents.items())
         if isinstance(content, str)
     ]
-    if len(required_document_paths) != REQUIRED_TEXT_DOCUMENT_COUNT:
+    if len(reference_document_paths) != REQUIRED_TEXT_DOCUMENT_COUNT:
         raise ValueError(
             f"expected {REQUIRED_TEXT_DOCUMENT_COUNT} readable evidence files, "
-            f"got {len(required_document_paths)}"
+            f"got {len(reference_document_paths)}"
         )
     binary_document_paths = [
         str(PurePosixPath("/workspace/documents") / relative)
@@ -3204,15 +3184,26 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         if isinstance(content, bytes)
     ]
     metadata_by_folder: dict[str, str] = {}
-    for path in [*binary_document_paths, *required_document_paths]:
+    for path in [*binary_document_paths, *reference_document_paths]:
         metadata_by_folder.setdefault(PurePosixPath(path).parts[-2], path)
     first_by_folder = list(metadata_by_folder.values())[:METADATA_CHECK_COUNT]
     if len(first_by_folder) != METADATA_CHECK_COUNT:
         raise ValueError(f"expected {METADATA_CHECK_COUNT} metadata paths, got {len(first_by_folder)}")
     calls = _reference_calls(
-        spine, task_number, entities, changes, required_document_paths, first_by_folder
+        spine, task_number, entities, changes, reference_document_paths, first_by_folder
     )
     holds = _build_holds(task_number, entities, changes, paths_by_key)
+    required_document_paths = _material_document_paths(changes, holds)
+    metadata_check_paths = [
+        path
+        for path in first_by_folder
+        if path in binary_document_paths or path in required_document_paths
+    ][:4]
+    for path in first_by_folder:
+        if len(metadata_check_paths) >= 4:
+            break
+        if path not in metadata_check_paths:
+            metadata_check_paths.append(path)
     changes_payload, brief_text = _reference_outputs(
         task_id, spine, task_number, changes, holds
     )
@@ -3253,8 +3244,11 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         "fixed_file_timestamp": FIXED_FILE_TIMESTAMP,
         "agent_visible_document_paths": all_document_paths,
         "required_document_paths": required_document_paths,
-        "metadata_check_paths": first_by_folder,
-        "required_investigation_calls": [
+        "reference_document_paths": reference_document_paths,
+        "metadata_check_paths": metadata_check_paths,
+        "reference_metadata_check_paths": first_by_folder,
+        "required_investigation_calls": _material_investigation_calls(calls),
+        "reference_investigation_calls": [
             {
                 "server": call["server"],
                 "name": call["name"],
@@ -3265,6 +3259,9 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             if call.get("purpose")
         ],
         "investigation_purposes": [
+            call["purpose"] for call in _material_investigation_calls(calls)
+        ],
+        "reference_investigation_purposes": [
             call["purpose"] for call in calls if call.get("purpose")
         ],
         "reference_tool_calls": len(calls),

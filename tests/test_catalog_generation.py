@@ -53,8 +53,9 @@ class CatalogGenerationTests(unittest.TestCase):
             self.assertGreaterEqual(len(task.reference["calls"]), MIN_REFERENCE_TOOL_CALLS)
             self.assertLessEqual(len(task.reference["calls"]), MAX_REFERENCE_TOOL_CALLS)
             self.assertEqual(task.spec["reference_tool_calls"], len(task.reference["calls"]))
-            self.assertGreaterEqual(len(task.spec["required_investigation_calls"]), 6)
-            self.assertLessEqual(len(task.spec["required_investigation_calls"]), 11)
+            self.assertEqual(len(task.spec["required_investigation_calls"]), 5)
+            self.assertGreaterEqual(len(task.spec["reference_investigation_calls"]), 6)
+            self.assertLessEqual(len(task.spec["reference_investigation_calls"]), 11)
             self.assertEqual(
                 len(task.spec["investigation_purposes"]),
                 len(task.spec["required_investigation_calls"]),
@@ -67,7 +68,16 @@ class CatalogGenerationTests(unittest.TestCase):
             )
             self.assertEqual(len(task.spec["decision_options"]), 3)
             self.assertEqual(sum(option["selected"] for option in task.spec["decision_options"]), 1)
-            self.assertGreaterEqual(len(task.spec["rubric_criteria"]), 40)
+            self.assertGreaterEqual(len(task.spec["required_document_paths"]), 10)
+            self.assertLessEqual(len(task.spec["required_document_paths"]), 12)
+            self.assertEqual(len(task.spec["reference_document_paths"]), 24)
+            self.assertEqual(len(task.spec["metadata_check_paths"]), 4)
+            self.assertEqual(len(task.spec["reference_metadata_check_paths"]), 8)
+            self.assertEqual(len(task.spec["rubric_criteria"]), 14)
+            self.assertEqual(
+                sum(row["weight"] for row in task.spec["rubric_criteria"]),
+                100,
+            )
             self.assertEqual(
                 len({row["id"] for row in task.spec["rubric_criteria"]}),
                 len(task.spec["rubric_criteria"]),
@@ -77,6 +87,15 @@ class CatalogGenerationTests(unittest.TestCase):
             for task in self.tasks
         }
         self.assertGreaterEqual(len(mutation_counts), 6)
+        self.assertEqual(
+            len(
+                {
+                    tuple(row["description"] for row in task.spec["rubric_criteria"])
+                    for task in self.tasks
+                }
+            ),
+            100,
+        )
 
     def test_employee_requests_are_high_level_and_reference_workflows_are_unique(self) -> None:
         prompts = [task.prompt for task in self.tasks]
@@ -428,6 +447,26 @@ class CatalogGenerationTests(unittest.TestCase):
         self.assertEqual(len(rows), 100)
         self.assertTrue(all(isinstance(row, dict) for row in rows))
         self.assertEqual(len({row["task_id"] for row in rows}), 100)
+        self.assertTrue(
+            all(len(row["rubric"]["criteria"]) == 14 for row in rows)
+        )
+        self.assertTrue(
+            all(
+                sum(criterion["weight"] for criterion in row["rubric"]["criteria"])
+                == 100
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            all(
+                10 <= row["rubric"]["required_document_reads"] <= 12
+                and row["rubric"]["reference_document_reads"] == 24
+                and row["rubric"]["call_order_policy"].startswith(
+                    "The reference trajectory is illustrative, not graded."
+                )
+                for row in rows
+            )
+        )
         self.assertIn("conformance.json", copied_reports)
         self.assertNotIn("harbor-registry-qualification.json", copied_reports)
         self.assertNotIn("model-evaluation.json", copied_reports)
