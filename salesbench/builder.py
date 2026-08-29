@@ -1100,7 +1100,20 @@ def build(output: Path) -> dict[str, Any]:
     _copy_public_world(hf_root)
     (hf_root / "tests").mkdir(parents=True, exist_ok=True)
     if (ROOT / "tests").exists():
-        shutil.copytree(ROOT / "tests", hf_root / "tests", dirs_exist_ok=True)
+        shutil.copytree(
+            ROOT / "tests",
+            hf_root / "tests",
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns(
+                "__pycache__",
+                "*.pyc",
+                "*.pyo",
+                ".DS_Store",
+                "*.swp",
+                "*.swo",
+                "*~",
+            ),
+        )
     if (ROOT / "salesbench" / "run_suite.py").exists():
         shutil.copy2(
             ROOT / "salesbench" / "run_suite.py",

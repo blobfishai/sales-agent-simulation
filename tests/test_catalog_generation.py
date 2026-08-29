@@ -384,12 +384,24 @@ class CatalogGenerationTests(unittest.TestCase):
                 path.name
                 for path in (output / "reports").glob("*.json")
             }
+            copied_runtime_residue = [
+                path.relative_to(output).as_posix()
+                for path in output.rglob("*")
+                if path.is_file()
+                and (
+                    "__pycache__" in path.parts
+                    or path.suffix in {".pyc", ".pyo", ".swp", ".swo"}
+                    or path.name == ".DS_Store"
+                    or path.name.endswith("~")
+                )
+            ]
         self.assertEqual(len(rows), 100)
         self.assertTrue(all(isinstance(row, dict) for row in rows))
         self.assertEqual(len({row["task_id"] for row in rows}), 100)
         self.assertIn("conformance.json", copied_reports)
         self.assertNotIn("harbor-registry-qualification.json", copied_reports)
         self.assertNotIn("model-evaluation.json", copied_reports)
+        self.assertEqual(copied_runtime_residue, [])
 
 
 if __name__ == "__main__":
