@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import tempfile
 import unittest
 from collections import Counter
+from pathlib import Path
 
-from salesbench.builder import compose_yaml, dataset_card, main_dockerfile, world_dockerfile
+from salesbench.builder import build, compose_yaml, dataset_card, main_dockerfile, world_dockerfile
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
+from salesbench.decision_specs import DECISION_RULES
 from salesbench.generation import (
     DOCUMENT_COUNT,
-    MINIMUM_TOOL_CALLS,
-    TARGET_CHANGE_COUNT,
+    EVIDENCE_ROLES,
+    MAX_REFERENCE_TOOL_CALLS,
+    MAX_TARGET_CHANGE_COUNT,
+    MIN_REFERENCE_TOOL_CALLS,
+    MIN_TARGET_CHANGE_COUNT,
     generate_all,
 )
 
@@ -32,16 +39,27 @@ class CatalogGenerationTests(unittest.TestCase):
     def test_every_task_has_long_horizon_structure(self) -> None:
         for task in self.tasks:
             self.assertEqual(len(task.documents), DOCUMENT_COUNT)
-            self.assertEqual(len(task.reference["calls"]), MINIMUM_TOOL_CALLS)
-            self.assertGreaterEqual(len(task.reference["calls"]), 100)
-            self.assertEqual(len(task.spec["expected_changes"]), TARGET_CHANGE_COUNT)
+            self.assertGreaterEqual(len(task.reference["calls"]), MIN_REFERENCE_TOOL_CALLS)
+            self.assertLessEqual(len(task.reference["calls"]), MAX_REFERENCE_TOOL_CALLS)
+            self.assertEqual(task.spec["reference_tool_calls"], len(task.reference["calls"]))
+            self.assertGreaterEqual(len(task.spec["expected_changes"]), MIN_TARGET_CHANGE_COUNT)
+            self.assertLessEqual(len(task.spec["expected_changes"]), MAX_TARGET_CHANGE_COUNT)
             self.assertEqual(
                 {call["server"] for call in task.reference["calls"]},
                 {"filesystem", "salesforce", "hubspot", "gong"},
             )
             self.assertEqual(len(task.spec["decision_options"]), 3)
             self.assertEqual(sum(option["selected"] for option in task.spec["decision_options"]), 1)
-            self.assertEqual(len(task.spec["rubric_criteria"]), 281)
+            self.assertGreaterEqual(len(task.spec["rubric_criteria"]), 40)
+            self.assertEqual(
+                len({row["id"] for row in task.spec["rubric_criteria"]}),
+                len(task.spec["rubric_criteria"]),
+            )
+        mutation_counts = {
+            len(task.spec["expected_changes"])
+            for task in self.tasks
+        }
+        self.assertGreaterEqual(len(mutation_counts), 6)
 
     def test_employee_requests_are_high_level_and_reference_workflows_are_unique(self) -> None:
         prompts = [task.prompt for task in self.tasks]
@@ -62,6 +80,167 @@ class CatalogGenerationTests(unittest.TestCase):
                 )
             )
 
+    def test_semantic_action_graphs_are_unique_not_just_read_order(self) -> None:
+        def node(call: dict) -> tuple:
+            server = call["server"]
+            tool = call["name"]
+            arguments = call["arguments"]
+            if server == "salesforce" and tool == "soqlQuery":
+                query = arguments["query"]
+                object_match = re.search(r"\bFROM\s+(\w+)", query, re.IGNORECASE)
+                self.assertIsNotNone(object_match)
+                fields = query.split("FROM", 1)[0].split("SELECT", 1)[1].strip()
+                return server, tool, object_match.group(1), fields
+            if tool == "updateSobjectRecord":
+                return (
+                    server,
+                    tool,
+                    arguments["sobject-name"],
+                    tuple(sorted(arguments["body"])),
+                )
+            if tool in {"hubspot_get_object", "hubspot_update_object"}:
+                fields = arguments.get("properties", {})
+                if isinstance(fields, dict):
+                    fields = sorted(fields)
+                return server, tool, arguments["object_type"], tuple(fields)
+            return server, tool, ""
+
+        signatures = []
+        for task in self.tasks:
+            histogram = Counter(node(call) for call in task.reference["calls"])
+            signatures.append(json.dumps(sorted(histogram.items()), sort_keys=True))
+        self.assertEqual(len(set(signatures)), 100)
+
+    def test_every_derived_value_is_reconstructible_from_split_inputs(self) -> None:
+        for task in self.tasks:
+            rule = DECISION_RULES[task.spine.slug]
+            for change in task.spec["expected_changes"]:
+                observed = change["decision_inputs"]["observed"]
+                authority = change["decision_inputs"]["authority"]
+                self.assertIn(rule.observation_key, observed)
+                self.assertIn(rule.authority_key, authority)
+                self.assertEqual(change["decision_method"], rule.method)
+                self.assertEqual(len(change["evidence_sources"]), len(EVIDENCE_ROLES))
+                kind = change["value_kind"]
+                if kind == "static":
+                    expected = authority[
+                        f"approved_{change['system']}_outcome"
+                    ]
+                elif kind == "amount":
+                    expected = round(
+                        (observed["gross_measure"] - observed["excluded_measure"])
+                        * authority["approved_rate"]
+                    )
+                    if change["system"] == "hubspot":
+                        expected = str(expected)
+                elif kind == "date":
+                    expected = max(
+                        observed["buyer_supported_date"],
+                        authority["first_policy_compliant_date"],
+                    )
+                elif kind == "owner":
+                    self.assertTrue(authority["owner_active"])
+                    self.assertGreater(authority["remaining_capacity"], 0)
+                    expected = authority["candidate_owner_id"]
+                elif kind == "risk":
+                    self.assertGreaterEqual(
+                        observed["independent_mentions"],
+                        authority["minimum_independent_mentions"],
+                    )
+                    expected = observed["candidate_risk_code"]
+                elif kind == "signal":
+                    self.assertNotEqual(
+                        observed["buyer_supported_action"],
+                        observed["seller_only_inference"],
+                    )
+                    expected = observed["buyer_supported_action"]
+                elif kind == "role":
+                    self.assertGreaterEqual(
+                        observed["independent_sources"], authority["minimum_sources"]
+                    )
+                    expected = observed["corroborated_role"]
+                elif kind == "cross_id":
+                    expected = authority[
+                        "matched_hubspot_id"
+                        if change["system"] == "salesforce"
+                        else "matched_salesforce_id"
+                    ]
+                elif kind == "account":
+                    self.assertFalse(authority["alias_alone_sufficient"])
+                    expected = observed["legal_account_name"]
+                else:  # pragma: no cover - protects future action kinds
+                    self.fail(f"unsupported value kind {kind}")
+                self.assertEqual(expected, change["after"], (task.task_id, change["id"]))
+
+    def test_all_one_hundred_causal_rules_are_authored_and_distinct(self) -> None:
+        self.assertEqual(set(DECISION_RULES), {spine.slug for spine in TASK_SPINES})
+        signatures = {
+            (rule.observation_key, rule.authority_key, rule.method)
+            for rule in DECISION_RULES.values()
+        }
+        self.assertEqual(len(signatures), 100)
+        self.assertNotIn(
+            "apply the governed outcome only after the five-way eligibility join",
+            {rule.method for rule in DECISION_RULES.values()},
+        )
+
+    def test_fx_rate_table_is_shared_by_currency_not_randomized_per_row(self) -> None:
+        atlas = next(
+            task for task in self.tasks if task.spine.slug == "atlas-apac-currency"
+        )
+        rates_by_currency: dict[str, set[float]] = {}
+        for change in atlas.spec["expected_changes"]:
+            inputs = change["decision_inputs"]
+            currency = inputs["observed"]["transaction_currency"]
+            rates_by_currency.setdefault(currency, set()).add(
+                inputs["authority"]["approved_rate"]
+            )
+        self.assertTrue(rates_by_currency)
+        self.assertTrue(all(len(rates) == 1 for rates in rates_by_currency.values()))
+
+    def test_decision_options_holds_and_readbacks_are_task_specific(self) -> None:
+        option_ids: list[str] = []
+        for task in self.tasks:
+            options = task.spec["decision_options"]
+            option_ids.extend(option["id"] for option in options)
+            self.assertNotIn('"selected":', "\n".join(task.documents.values()))
+            changed = {
+                change["portfolio_key"] for change in task.spec["expected_changes"]
+            }
+            held = {hold["portfolio_key"] for hold in task.spec["expected_holds"]}
+            expected_keys = {
+                f"SBP-{task.spec['task_number']:03d}-{slot:02d}"
+                for slot in range(1, 17)
+            }
+            self.assertFalse(changed & held)
+            self.assertEqual(changed | held, expected_keys)
+            self.assertEqual(len(held), task.spec["expected_hold_count"])
+
+            calls = task.reference["calls"]
+            mutations = [
+                (index, call)
+                for index, call in enumerate(calls)
+                if call.get("phase") == "authorized_mutation"
+            ]
+            self.assertEqual(len(mutations), task.spec["expected_change_count"])
+            for index, mutation in mutations:
+                readback = calls[index + 1]
+                self.assertEqual(readback.get("phase"), "postwrite_readback")
+                self.assertEqual(readback.get("change_id"), mutation.get("change_id"))
+        self.assertEqual(len(option_ids), 300)
+        self.assertEqual(len(set(option_ids)), 300)
+
+    def test_operating_histories_are_bounded_and_amount_answers_are_not_seeded(self) -> None:
+        for task in self.tasks:
+            combined = "\n".join(task.documents.values())
+            events = re.findall(r"EVT-\d{3}-\d{3}-\d+", combined)
+            self.assertGreaterEqual(len(events), 16 * 5)
+            self.assertLessEqual(len(events), 16 * 6)
+            self.assertEqual(len(events), len(set(events)))
+            for change in task.spec["expected_changes"]:
+                if change["value_kind"] == "amount":
+                    self.assertNotIn(str(change["after"]), combined)
+
     def test_operating_contract_is_discoverable_inside_each_evidence_room(self) -> None:
         for task in self.tasks:
             deliverable_records = [
@@ -69,16 +248,73 @@ class CatalogGenerationTests(unittest.TestCase):
                 for relative, content in task.documents.items()
                 if relative.startswith("12_deliverables/")
             ]
-            self.assertEqual(len(deliverable_records), 8)
+            self.assertEqual(len(deliverable_records), 1)
             self.assertTrue(all("workflow_contract" in content for content in deliverable_records))
+
+    def test_business_evidence_does_not_publish_a_precomputed_change(self) -> None:
+        forbidden_keys = (
+            '"decision"',
+            '"eligible_for_requested_workflow"',
+            '"decision_code"',
+            '"authorized_record_id"',
+            '"authorized_field"',
+            '"required_value"',
+        )
+        for task in self.tasks:
+            combined = "\n".join(task.documents.values())
+            for forbidden in forbidden_keys:
+                self.assertNotIn(forbidden, combined, (task.task_id, forbidden))
+            for change in task.spec["expected_changes"]:
+                for content in task.documents.values():
+                    leaked_complete_transition = all(
+                        str(value) in content
+                        for value in (
+                            change["record_id"],
+                            change["field"],
+                            change["after"],
+                            "approved_within_policy",
+                        )
+                    )
+                    self.assertFalse(
+                        leaked_complete_transition,
+                        (task.task_id, change["id"]),
+                    )
+
+    def test_each_portfolio_key_requires_six_independent_evidence_roles(self) -> None:
+        for task in self.tasks:
+            for portfolio_slot in range(1, 17):
+                portfolio_key = f"SBP-{task.spec['task_number']:03d}-{portfolio_slot:02d}"
+                records = [
+                    content
+                    for content in task.documents.values()
+                    if portfolio_key in content
+                ]
+                self.assertEqual(len(records), len(EVIDENCE_ROLES))
+                for role in EVIDENCE_ROLES:
+                    declarations = (
+                        f'"evidence_role": "{role}"',
+                        f'evidence_role,"""{role}"""',
+                        f'&quot;evidence_role&quot;: &quot;{role}&quot;',
+                        f',{role},',
+                    )
+                    self.assertEqual(
+                        sum(
+                            any(declaration in content for declaration in declarations)
+                            for content in records
+                        ),
+                        1,
+                        (task.task_id, portfolio_key, role),
+                    )
 
     def test_seeded_documents_are_deep_and_globally_unique(self) -> None:
         contents = [content for task in self.tasks for content in task.documents.values()]
-        self.assertEqual(len(contents), 9_600)
-        self.assertGreaterEqual(min(len(content.encode("utf-8")) for content in contents), 5_000)
+        self.assertEqual(len(contents), 1_200)
+        # Depth comes from independently necessary roles, not padding every
+        # file to an arbitrary byte floor.
+        self.assertGreaterEqual(min(len(content.encode("utf-8")) for content in contents), 800)
         self.assertEqual(
             len({hashlib.sha256(content.encode("utf-8")).digest() for content in contents}),
-            9_600,
+            1_200,
         )
 
     def test_seeded_documents_are_baked_into_public_harbor_images(self) -> None:
@@ -93,6 +329,28 @@ class CatalogGenerationTests(unittest.TestCase):
         card = dataset_card()
         self.assertIn("configs:\n- config_name: default", card)
         self.assertIn("split: test\n    path: data/tasks.jsonl", card)
+
+    def test_built_hugging_face_jsonl_contains_one_object_per_task(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            output = Path(raw) / "salesbench-100"
+            build(output)
+            rows = [
+                json.loads(line)
+                for line in (output / "huggingface" / "data" / "tasks.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            ]
+            copied_reports = {
+                path.name
+                for path in (output / "reports").glob("*.json")
+            }
+        self.assertEqual(len(rows), 100)
+        self.assertTrue(all(isinstance(row, dict) for row in rows))
+        self.assertEqual(len({row["task_id"] for row in rows}), 100)
+        self.assertIn("conformance.json", copied_reports)
+        self.assertNotIn("harbor-registry-qualification.json", copied_reports)
+        self.assertNotIn("model-evaluation.json", copied_reports)
 
 
 if __name__ == "__main__":

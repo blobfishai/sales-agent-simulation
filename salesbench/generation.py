@@ -15,19 +15,26 @@ from datetime import date, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
+from .action_specs import ACTION_SPECS, ActionSpec, validate_action_specs
 from .catalog import FAMILY_SETTINGS, TASK_SPINES, TaskSpine
 from .contracts import CONTRACT_PINS
+from .decision_specs import DECISION_RULES, validate_decision_rules
 
 
-RELEASE_VERSION = "2.0.0"
+RELEASE_VERSION = "3.0.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
-DOCUMENT_COUNT = 96
+DOCUMENT_COUNT = 12
 METADATA_CHECK_COUNT = 8
-TARGET_CHANGE_COUNT = 12
 PORTFOLIO_ENTITY_COUNT = 16
+MIN_TARGET_CHANGE_COUNT = 5
+MAX_TARGET_CHANGE_COUNT = 12
 DISTRACTOR_ENTITY_COUNT = 48
-MINIMUM_TOOL_CALLS = 163
+MIN_REFERENCE_TOOL_CALLS = 56
+MAX_REFERENCE_TOOL_CALLS = 91
 DELIVERABLES = ("changes.json", "brief.md")
+
+validate_action_specs({spine.slug for spine in TASK_SPINES})
+validate_decision_rules({spine.slug for spine in TASK_SPINES})
 
 OWNERS = (
     ("005SB000000001", "Maya Chen", "Enterprise AE"),
@@ -71,7 +78,192 @@ RISK_CODES = (
     "stage_evidence_gap",
 )
 
-EXTENSIONS = ("md", "txt", "json", "csv", "eml", "xml", "html", "md")
+EXTENSIONS = (
+    "md",
+    "csv",
+    "json",
+    "eml",
+    "csv",
+    "html",
+    "xml",
+    "txt",
+    "csv",
+    "md",
+    "json",
+    "md",
+)
+
+# Every portfolio key appears once in each role. No single released record
+# contains the complete answer: identity, operating fact, authority, governed
+# transition, live-system corroboration, and exception evidence have to agree.
+EVIDENCE_ROLES = (
+    "identity_crosswalk",
+    "operating_observation",
+    "authority_record",
+    "governed_transition",
+    "live_system_corroboration",
+    "exception_record",
+)
+
+# Folder meaning differs by workflow.  Each role still appears exactly twice so
+# every portfolio key receives one independently authored row for each causal
+# role, but a finance input no longer lands in a Gong folder merely because of
+# its ordinal position.
+EVIDENCE_ROLE_FOLDERS: dict[str, dict[str, str]] = {
+    "forecast-reconciliation": {
+        "01_salesforce_pipeline": "identity_crosswalk",
+        "02_hubspot_deals": "identity_crosswalk",
+        "03_gong_briefs": "operating_observation",
+        "04_call_evidence": "operating_observation",
+        "05_forecast_snapshots": "authority_record",
+        "06_rep_commits": "authority_record",
+        "07_stage_policy": "governed_transition",
+        "08_close_plans": "live_system_corroboration",
+        "09_finance_actuals": "live_system_corroboration",
+        "10_territories": "governed_transition",
+        "11_exceptions": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "pipeline-recovery": {
+        "01_open_opportunities": "identity_crosswalk",
+        "02_stage_history": "identity_crosswalk",
+        "03_hubspot_activity": "operating_observation",
+        "04_gong_deal_questions": "operating_observation",
+        "05_next_steps": "authority_record",
+        "06_calendar": "governed_transition",
+        "07_owner_roster": "authority_record",
+        "08_slippage": "live_system_corroboration",
+        "09_support_risks": "live_system_corroboration",
+        "10_playbooks": "governed_transition",
+        "11_exclusions": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "gong-action-reconciliation": {
+        "01_gong_calls": "operating_observation",
+        "02_gong_briefs": "operating_observation",
+        "03_salesforce_activities": "identity_crosswalk",
+        "04_hubspot_engagements": "identity_crosswalk",
+        "05_commitments": "authority_record",
+        "06_stakeholders": "authority_record",
+        "07_objections": "live_system_corroboration",
+        "08_competitors": "live_system_corroboration",
+        "09_followups": "governed_transition",
+        "10_evidence_policy": "governed_transition",
+        "11_private_calls": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "identity-migration": {
+        "01_salesforce_accounts": "identity_crosswalk",
+        "02_hubspot_companies": "identity_crosswalk",
+        "03_contacts": "operating_observation",
+        "04_domains": "live_system_corroboration",
+        "05_external_ids": "authority_record",
+        "06_associations": "authority_record",
+        "07_merge_history": "live_system_corroboration",
+        "08_sync_failures": "operating_observation",
+        "09_source_rules": "governed_transition",
+        "10_consent": "governed_transition",
+        "11_do_not_merge": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "lead-routing": {
+        "01_inbound_leads": "identity_crosswalk",
+        "02_hubspot_contacts": "identity_crosswalk",
+        "03_salesforce_leads": "operating_observation",
+        "04_gong_history": "operating_observation",
+        "05_account_matches": "live_system_corroboration",
+        "06_territories": "authority_record",
+        "07_scoring_policy": "governed_transition",
+        "08_consent": "governed_transition",
+        "09_owner_capacity": "authority_record",
+        "10_disqualifiers": "live_system_corroboration",
+        "11_routing_audit": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "renewal-expansion": {
+        "01_contracts": "identity_crosswalk",
+        "02_subscriptions": "identity_crosswalk",
+        "03_salesforce_renewals": "live_system_corroboration",
+        "04_hubspot_health": "live_system_corroboration",
+        "05_gong_account_voice": "operating_observation",
+        "06_support": "governed_transition",
+        "07_usage": "operating_observation",
+        "08_notice_windows": "authority_record",
+        "09_expansion_signals": "authority_record",
+        "10_handoff_policy": "governed_transition",
+        "11_risks": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "quote-governance": {
+        "01_opportunities": "identity_crosswalk",
+        "02_quotes": "identity_crosswalk",
+        "03_line_items": "operating_observation",
+        "04_discount_matrix": "governed_transition",
+        "05_approvals": "authority_record",
+        "06_gong_commercials": "operating_observation",
+        "07_hubspot_deals": "live_system_corroboration",
+        "08_legal_status": "live_system_corroboration",
+        "09_finance_checks": "authority_record",
+        "10_close_plan": "governed_transition",
+        "11_exceptions": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "account-planning": {
+        "01_accounts": "identity_crosswalk",
+        "02_opportunities": "live_system_corroboration",
+        "03_contacts": "identity_crosswalk",
+        "04_gong_briefs": "operating_observation",
+        "05_org_charts": "authority_record",
+        "06_engagement": "operating_observation",
+        "07_products": "governed_transition",
+        "08_competition": "exception_record",
+        "09_support": "live_system_corroboration",
+        "10_white_space": "authority_record",
+        "11_account_plan_policy": "governed_transition",
+        "12_deliverables": "exception_record",
+    },
+    "sequence-compliance": {
+        "01_sequences": "operating_observation",
+        "02_enrollments": "live_system_corroboration",
+        "03_contacts": "identity_crosswalk",
+        "04_consent": "authority_record",
+        "05_suppressions": "authority_record",
+        "06_email_events": "operating_observation",
+        "07_domains": "governed_transition",
+        "08_salesforce_campaigns": "identity_crosswalk",
+        "09_hubspot_workflows": "live_system_corroboration",
+        "10_regional_policy": "governed_transition",
+        "11_exceptions": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+    "cutover-audit": {
+        "01_cutover_plan": "authority_record",
+        "02_salesforce_extract": "identity_crosswalk",
+        "03_hubspot_extract": "identity_crosswalk",
+        "04_field_mapping": "authority_record",
+        "05_owner_mapping": "governed_transition",
+        "06_stage_mapping": "live_system_corroboration",
+        "07_activity_counts": "operating_observation",
+        "08_gong_links": "operating_observation",
+        "09_error_queue": "live_system_corroboration",
+        "10_acceptance_rules": "governed_transition",
+        "11_rollbacks": "exception_record",
+        "12_deliverables": "exception_record",
+    },
+}
+
+for _family, _settings in FAMILY_SETTINGS.items():
+    _folders = list(_settings["folders"])
+    _role_map = EVIDENCE_ROLE_FOLDERS.get(_family, {})
+    _role_counts = {
+        role: list(_role_map.values()).count(role) for role in EVIDENCE_ROLES
+    }
+    if set(_role_map) != set(_folders) or any(
+        count != 2 for count in _role_counts.values()
+    ):
+        raise ValueError(
+            f"invalid evidence-role folder map for {_family}: {_role_counts}"
+        )
 
 
 @dataclass(frozen=True)
@@ -103,6 +295,233 @@ def verification_token(task_id: str) -> str:
 
 def task_id_for(index: int, slug: str) -> str:
     return f"sb100-{index:03d}-{slug}"
+
+
+def target_change_count(spine: TaskSpine, task_number: int) -> int:
+    """Return a deterministic, task-specific workload size.
+
+    Real operating requests do not conveniently contain twelve actionable rows
+    every time.  The count is deliberately not exposed in the employee prompt;
+    it must fall out of the evidence review.
+    """
+
+    width = MAX_TARGET_CHANGE_COUNT - MIN_TARGET_CHANGE_COUNT + 1
+    return MIN_TARGET_CHANGE_COUNT + stable_seed(
+        f"{task_number}:{spine.slug}:actionable-portfolio"
+    ) % width
+
+
+def _decision_method(spine: TaskSpine) -> str:
+    return DECISION_RULES[spine.slug].method
+
+
+def _render_decision_template(
+    template: str,
+    spine: TaskSpine,
+    entity: dict[str, Any],
+) -> str:
+    context = {
+        "account": entity["account_name"],
+        "amount": entity["amount"],
+        "batch_id": f"BATCH-{stable_seed(spine.slug) % 97:02d}-{entity['slot'] // 2 + 1:02d}",
+        "close_date": entity["close_date"],
+        "milestone_id": f"MS-{stable_seed(spine.title) % 10_000:04d}-{entity['slot'] + 1:02d}",
+        "owner": entity["owner_name"],
+        "owner_role": entity["owner_role"],
+        "period": spine.period,
+        "region": spine.region,
+        "repeat_count": 3 + entity["slot"] % 5,
+        "risk_code": entity["risk_code"],
+        "signal": entity["signal"],
+        "stage": entity["stage"],
+    }
+    return template.format(**context)
+
+
+def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
+    """Return plausible task-specific approaches without disclosing the winner."""
+
+    kind = ACTION_SPECS[spine.slug].value_kind
+    variants = {
+        "static": (
+            (
+                "controlled-evidence-join",
+                "Apply the governed result only to rows passing every control",
+                "Join identity, current observation, authority, provider state, and exceptions.",
+            ),
+            (
+                "latest-provider-bulk-sync",
+                "Treat the newest provider timestamp as authoritative",
+                "Use recency as the only selection rule and synchronize the portfolio.",
+            ),
+            (
+                "portfolio-wide-hold",
+                "Leave the entire portfolio unchanged",
+                "Wait for every source to agree verbatim before acting on any row.",
+            ),
+        ),
+        "amount": (
+            (
+                "controlled-input-recalculation",
+                "Recalculate the governed measure from its controlled inputs",
+                "Apply the documented exclusions, effective rate, and rounding rule per row.",
+            ),
+            (
+                "gross-header-value",
+                "Copy the gross CRM header value",
+                "Ignore exclusions and conversion controls and use the displayed gross amount.",
+            ),
+            (
+                "amount-review-hold",
+                "Hold all amount corrections",
+                "Defer every row until the next finance review even when inputs reconcile.",
+            ),
+        ),
+        "date": (
+            (
+                "supported-policy-date",
+                "Use the later supported and policy-compliant date",
+                "Compare the buyer-supported date with the first allowed operating date.",
+            ),
+            (
+                "earliest-calendar-date",
+                "Use the earliest date found in any source",
+                "Prefer speed even when that date violates the current policy constraint.",
+            ),
+            (
+                "retain-stale-date",
+                "Leave every current CRM date in place",
+                "Avoid correction even where current evidence resolves the conflict.",
+            ),
+        ),
+        "owner": (
+            (
+                "qualified-owner-with-capacity",
+                "Assign the active qualified owner with available capacity",
+                "Reconcile territory and role fit with the effective capacity register.",
+            ),
+            (
+                "round-robin-owner",
+                "Use an unqualified round-robin assignment",
+                "Ignore territory, status, and capacity in favor of queue order.",
+            ),
+            (
+                "retain-routing-queue",
+                "Leave every supported row in the routing queue",
+                "Avoid assignment even where one candidate satisfies every control.",
+            ),
+        ),
+        "risk": (
+            (
+                "corroborated-permitted-risk",
+                "Apply only a corroborated risk from permitted evidence",
+                "Meet the independent-source threshold without copying private activity.",
+            ),
+            (
+                "seller-note-risk",
+                "Trust a single seller-authored risk note",
+                "Classify from one assertion without independent corroboration.",
+            ),
+            (
+                "clear-all-risks",
+                "Remove risk labels from the entire portfolio",
+                "Treat missing verbatim agreement as evidence that no risk exists.",
+            ),
+        ),
+        "signal": (
+            (
+                "buyer-supported-action",
+                "Record the permitted buyer-supported action",
+                "Use the explicit synthesized buyer commitment and reject seller inference.",
+            ),
+            (
+                "seller-inferred-action",
+                "Record the seller's inferred next step",
+                "Treat an internal interpretation as if the buyer had committed to it.",
+            ),
+            (
+                "blanket-signal-hold",
+                "Leave all signal fields unchanged",
+                "Defer supported actions together with genuinely ambiguous records.",
+            ),
+        ),
+        "role": (
+            (
+                "corroborated-stakeholder-role",
+                "Assign the independently corroborated stakeholder role",
+                "Require two permitted sources to agree on the person's buying role.",
+            ),
+            (
+                "title-derived-role",
+                "Infer the role from a job title alone",
+                "Use one ambiguous attribute without source corroboration.",
+            ),
+            (
+                "retain-unknown-role",
+                "Keep every stakeholder role unknown",
+                "Leave even independently supported role corrections unresolved.",
+            ),
+        ),
+        "cross_id": (
+            (
+                "effective-exact-crosswalk",
+                "Write the opposite provider ID from the effective exact crosswalk",
+                "Require legal name, domain, external key, and mapping revision to agree.",
+            ),
+            (
+                "name-only-crosswalk",
+                "Match records by the closest display name",
+                "Ignore domain, immutable identifiers, and effective revision.",
+            ),
+            (
+                "leave-links-empty",
+                "Leave every cross-system link empty",
+                "Defer exact matches together with genuinely ambiguous identities.",
+            ),
+        ),
+        "account": (
+            (
+                "three-key-legal-identity",
+                "Select the legal account satisfying all three identity keys",
+                "Reconcile legal name, domain, and external identifier.",
+            ),
+            (
+                "closest-account-alias",
+                "Select the closest account alias",
+                "Ignore the immutable crosswalk when a display name looks similar.",
+            ),
+            (
+                "leave-account-unresolved",
+                "Leave every account association unresolved",
+                "Avoid supported associations along with genuinely ambiguous ones.",
+            ),
+        ),
+    }[kind]
+    options = [
+        {
+            "id": f"{spine.slug}:{suffix}",
+            "label": label,
+            "approach": approach,
+        }
+        for suffix, label, approach in variants
+    ]
+    rule = DECISION_RULES[spine.slug]
+    options[0]["label"] = f"Apply the controlled {spine.title.casefold()} rule"
+    options[0]["approach"] = rule.method
+    options[1]["label"] = (
+        f"Use {rule.observation_key.replace('_', ' ')} without the controlling authority"
+    )
+    options[2]["label"] = f"Hold the entire {spine.title.casefold()} portfolio"
+    return options
+
+
+def _hold_reason(entity: dict[str, Any]) -> str:
+    return (
+        "approval_pending",
+        "source_conflict",
+        "identity_ambiguous",
+        "outside_current_period",
+    )[entity["slot"] % 4]
 
 
 def _sf_id(prefix: str, task_number: int, slot: int) -> str:
@@ -137,7 +556,12 @@ def _entity_name(spine: TaskSpine, slot: int) -> str:
 
 def build_entities(spine: TaskSpine, task_number: int) -> list[dict[str, Any]]:
     rng = random.Random(stable_seed(spine.slug))
-    target_slots = set(rng.sample(range(PORTFOLIO_ENTITY_COUNT), TARGET_CHANGE_COUNT))
+    target_slots = set(
+        rng.sample(
+            range(PORTFOLIO_ENTITY_COUNT),
+            target_change_count(spine, task_number),
+        )
+    )
     entities: list[dict[str, Any]] = []
     for slot in range(PORTFOLIO_ENTITY_COUNT):
         owner_id, owner_name, owner_role = OWNERS[(task_number + slot) % len(OWNERS)]
@@ -184,6 +608,8 @@ def build_entities(spine: TaskSpine, task_number: int) -> list[dict[str, Any]]:
                 ).isoformat(),
             }
         )
+    for entity in entities:
+        entity["decision_facts"] = _build_decision_facts(spine, entity)
     return entities
 
 
@@ -221,6 +647,405 @@ def _update_change(
     }
 
 
+def governed_policy(spine: TaskSpine) -> dict[str, Any]:
+    """Return the task's policy table without selecting a row or record.
+
+    A policy is allowed to explain what action follows when a condition is
+    proven.  It must not say which portfolio rows satisfy those conditions.
+    """
+
+    spec = ACTION_SPECS[spine.slug]
+    derivation = _decision_method(spine)
+    salesforce_result = (
+        spec.salesforce_after
+        if spec.value_kind == "static"
+        else derivation
+    )
+    hubspot_result = (
+        spec.hubspot_after
+        if spec.value_kind == "static"
+        else derivation
+    )
+    return {
+        "workflow": spine.family,
+        "effective_period": spine.period,
+        "eligibility_test": {
+            "identity": "independently matched",
+            "operating_observation": "corroborated and effective in the current period",
+            "authority": "approved for the requested scope",
+            "live_systems": "current records agree with the crosswalk and observation",
+            "exception_register": "no unresolved blocking exception",
+        },
+        "actions_when_all_conditions_pass": [
+            {
+                "system": "salesforce",
+                "object_type": spec.salesforce_object,
+                "field": spec.salesforce_field,
+                "from": spec.salesforce_before,
+                "to_or_derivation": salesforce_result,
+            },
+            {
+                "system": "hubspot",
+                "object_type": spec.hubspot_object,
+                "field": spec.hubspot_field,
+                "from": spec.hubspot_before,
+                "to_or_derivation": hubspot_result,
+            },
+        ],
+        "selection_rule": (
+            "Use the identity crosswalk and current provider state to choose the system row; "
+            "the policy does not identify an actionable portfolio record by itself."
+        ),
+        "candidate_approaches": _candidate_options(spine),
+    }
+
+SALESFORCE_ID_KEYS = {
+    "Account": "sf_account_id",
+    "Opportunity": "sf_opportunity_id",
+    "Contact": "sf_contact_id",
+    "Lead": "sf_lead_id",
+    "Quote": "sf_quote_id",
+    "Task": "sf_task_id",
+    "CampaignMember": "sf_campaign_member_id",
+}
+
+HUBSPOT_ID_KEYS = {
+    "companies": "hs_company_id",
+    "deals": "hs_deal_id",
+    "contacts": "hs_contact_id",
+    "tasks": "hs_task_id",
+}
+
+
+def _resolved_action_values(
+    spec: ActionSpec,
+    entity: dict[str, Any],
+) -> tuple[Any, Any]:
+    facts = entity["decision_facts"]
+    return facts["salesforce_value"], facts["hubspot_value"]
+
+
+def _provider_record_id(
+    entity: dict[str, Any], system: str, object_type: str
+) -> str:
+    key = (
+        SALESFORCE_ID_KEYS[object_type]
+        if system == "salesforce"
+        else HUBSPOT_ID_KEYS[object_type]
+    )
+    return str(entity[key])
+
+
+def _build_decision_facts(
+    spine: TaskSpine,
+    entity: dict[str, Any],
+) -> dict[str, Any]:
+    """Build raw, split-source facts and the hidden deterministic derivation."""
+
+    spec = ACTION_SPECS[spine.slug]
+    rule = DECISION_RULES[spine.slug]
+    kind = spec.value_kind
+    observed: dict[str, Any]
+    authority: dict[str, Any]
+    method: str
+    explanation: str
+
+    if kind == "static":
+        salesforce_value = spec.salesforce_after
+        hubspot_value = spec.hubspot_after
+        observed = {
+            "observed_signal": entity["signal"],
+            "observed_risk": entity["risk_code"],
+            "current_period": spine.period,
+        }
+        authority = {
+            "approved_salesforce_outcome": spec.salesforce_after,
+            "approved_hubspot_outcome": spec.hubspot_after,
+            "scope": "only rows passing every eligibility condition",
+        }
+        method = _decision_method(spine)
+        explanation = (
+            "Identity, effective observation, scoped authority, live provider state, "
+            "and the exception register must all agree."
+        )
+    elif kind == "amount":
+        gross = int(entity["amount"])
+        exclusion_rate = 7 + ((entity["slot"] + stable_seed(spine.slug)) % 9)
+        excluded = round(gross * exclusion_rate / 100)
+        if spine.slug == "quarry-enterprise-split":
+            rate_basis_points = 10_000
+            excluded_label = "duplicated overlay forecast value"
+            transaction_currency = "USD"
+        else:
+            transaction_currency = ("AUD", "JPY", "SGD", "EUR")[
+                entity["slot"] % 4
+            ]
+            rate_basis_points = {
+                "AUD": 6_512,
+                "JPY": 67,
+                "SGD": 7_415,
+                "EUR": 10_840,
+            }[transaction_currency]
+            excluded_label = "services amount excluded from subscription ARR"
+        method = _decision_method(spine)
+        derived = round((gross - excluded) * rate_basis_points / 10_000)
+        salesforce_value = derived
+        hubspot_value = str(derived)
+        observed = {
+            "gross_measure": gross,
+            "excluded_measure": excluded,
+            "excluded_measure_label": excluded_label,
+            "transaction_currency": transaction_currency,
+        }
+        authority = {
+            "approved_rate": rate_basis_points / 10_000,
+            "rate_effective_period": spine.period,
+            "rate_table_revision": f"FX-{spine.period}-APPROVED",
+            "rounding": "nearest whole reporting-currency unit",
+        }
+        explanation = (
+            f"{gross} less {excluded}, multiplied by {rate_basis_points / 10_000:.4f}, "
+            f"produces {derived}."
+        )
+    elif kind == "date":
+        buyer_date = date.fromisoformat(entity["close_date"])
+        constraint_date = buyer_date + timedelta(days=(entity["slot"] % 4) - 1)
+        derived_date = max(buyer_date, constraint_date).isoformat()
+        salesforce_value = derived_date
+        hubspot_value = derived_date
+        observed = {
+            "buyer_supported_date": buyer_date.isoformat(),
+            "source_event": entity["signal"],
+        }
+        authority = {
+            "first_policy_compliant_date": constraint_date.isoformat(),
+            "calendar_rule": "use the later of the buyer-supported and policy-compliant dates",
+        }
+        method = _decision_method(spine)
+        explanation = (
+            f"The later of {buyer_date.isoformat()} and {constraint_date.isoformat()} "
+            f"is {derived_date}."
+        )
+    elif kind == "owner":
+        salesforce_value = entity["owner_id"]
+        hubspot_value = entity["owner_id"]
+        observed = {
+            "territory": spine.region,
+            "language_or_segment_fit": entity["owner_role"],
+            "candidate_owner_name": entity["owner_name"],
+        }
+        authority = {
+            "candidate_owner_id": entity["owner_id"],
+            "owner_active": True,
+            "remaining_capacity": 3 + entity["slot"] % 7,
+            "alternate_owner_status": "inactive_or_at_capacity",
+        }
+        method = _decision_method(spine)
+        explanation = (
+            f"{entity['owner_name']} ({entity['owner_id']}) matches {spine.region} and "
+            "has remaining capacity; the alternate does not."
+        )
+    elif kind == "risk":
+        salesforce_value = entity["risk_code"]
+        hubspot_value = entity["risk_code"]
+        observed = {
+            "corroborated_signal": entity["signal"],
+            "candidate_risk_code": entity["risk_code"],
+            "independent_mentions": 2 + entity["slot"] % 3,
+        }
+        authority = {
+            "minimum_independent_mentions": 2,
+            "private_call_text_permitted": False,
+        }
+        method = _decision_method(spine)
+        explanation = (
+            f"{entity['risk_code']} has {2 + entity['slot'] % 3} independent permitted "
+            "mentions, meeting the threshold of 2."
+        )
+    elif kind == "signal":
+        salesforce_value = entity["signal"]
+        hubspot_value = entity["signal"]
+        observed = {
+            "buyer_supported_action": entity["signal"],
+            "seller_only_inference": SIGNALS[(entity["slot"] + 1) % len(SIGNALS)],
+        }
+        authority = {
+            "copy_permitted_synthesized_action": True,
+            "copy_raw_private_transcript": False,
+        }
+        method = _decision_method(spine)
+        explanation = f"The permitted action is {entity['signal']!r}."
+    elif kind == "role":
+        role = ("Economic Buyer", "Champion", "Technical Evaluator", "Procurement")[
+            entity["slot"] % 4
+        ]
+        salesforce_value = role
+        hubspot_value = role
+        observed = {
+            "named_stakeholder": f"Jordan {entity['account_name'].split()[0]}",
+            "corroborated_role": role,
+            "independent_sources": 2,
+        }
+        authority = {
+            "minimum_sources": 2,
+            "manually_verified_opt_out": False,
+        }
+        method = _decision_method(spine)
+        explanation = f"Two sources identify the stakeholder as {role}."
+    elif kind == "cross_id":
+        salesforce_value = str(entity[HUBSPOT_ID_KEYS[spec.hubspot_object]])
+        hubspot_value = str(entity[SALESFORCE_ID_KEYS[spec.salesforce_object]])
+        observed = {
+            "legal_name": entity["account_name"],
+            "domain": entity["domain"],
+            "external_match_confidence": "exact",
+        }
+        authority = {
+            "matched_salesforce_id": str(
+                entity[SALESFORCE_ID_KEYS[spec.salesforce_object]]
+            ),
+            "matched_hubspot_id": str(entity[HUBSPOT_ID_KEYS[spec.hubspot_object]]),
+            "mapping_revision": f"MAP-{spine.period}",
+        }
+        method = _decision_method(spine)
+        explanation = "Legal name, domain, external key, and mapping revision agree."
+    elif kind == "account":
+        salesforce_value = entity["account_name"]
+        hubspot_value = entity["account_name"]
+        observed = {
+            "legal_account_name": entity["account_name"],
+            "domain": entity["domain"],
+            "conflicting_alias": f"{entity['account_name'].split()[0]} Global",
+        }
+        authority = {
+            "identity_rule": "legal name plus domain plus external ID",
+            "alias_alone_sufficient": False,
+        }
+        method = _decision_method(spine)
+        explanation = f"{entity['account_name']} is the only identity satisfying all three keys."
+    else:
+        raise ValueError(f"unsupported action value kind: {kind}")
+
+    business_observation = _render_decision_template(
+        rule.observation_template, spine, entity
+    )
+    business_authority = _render_decision_template(
+        rule.authority_template, spine, entity
+    )
+    observed[rule.observation_key] = business_observation
+    authority[rule.authority_key] = business_authority
+    method = rule.method
+    explanation = (
+        f"Observed: {business_observation}. Control: {business_authority}. "
+        f"Application: {explanation}"
+    )
+
+    return {
+        "value_kind": kind,
+        "method": method,
+        "observed_inputs": observed,
+        "authority_inputs": authority,
+        "salesforce_value": salesforce_value,
+        "hubspot_value": hubspot_value,
+        "explanation": explanation,
+    }
+
+
+def _gong_evidence_call(spine: TaskSpine, entity: dict[str, Any]) -> dict[str, Any]:
+    common = {
+        "workspaceId": f"ws-{int(entity['portfolio_key'].split('-')[1]):03d}",
+        "timePeriod": "THIS_QUARTER",
+    }
+    if spine.family in {
+        "identity-migration",
+        "lead-routing",
+        "account-planning",
+        "sequence-compliance",
+    }:
+        return {
+            "server": "gong",
+            "name": "ask_account",
+            "arguments": {
+                **common,
+                "crmAccountId": entity["gong_account_id"],
+                "question": "What permitted account-level identity, stakeholder, or outreach evidence is established?",
+            },
+        }
+    if spine.family in {"pipeline-recovery", "gong-action-reconciliation"}:
+        return {
+            "server": "gong",
+            "name": "generate_brief",
+            "arguments": {
+                **common,
+                "briefName": "Deal Inspection",
+                "crmEntityType": "DEAL",
+                "crmEntityId": entity["gong_deal_id"],
+            },
+        }
+    return {
+        "server": "gong",
+        "name": "ask_deal",
+        "arguments": {
+            **common,
+            "crmDealId": entity["gong_deal_id"],
+            "question": "What buyer-supported next step, blocker, or decision is established for this deal?",
+        },
+    }
+
+
+def provider_evidence_order(spine: TaskSpine) -> tuple[str, str, str]:
+    """Choose the investigation order from the business question's source logic."""
+
+    text = f"{spine.title} {spine.narrative}".casefold()
+    explicit_positions = {
+        "salesforce": text.find("salesforce"),
+        "hubspot": text.find("hubspot"),
+        "gong": text.find("gong"),
+    }
+    named = [
+        system
+        for system, position in sorted(
+            explicit_positions.items(),
+            key=lambda item: item[1] if item[1] >= 0 else len(text) + 1,
+        )
+        if position >= 0
+    ]
+    if not named:
+        if "event scans" in text:
+            named.append("salesforce")
+        elif "company associations" in text:
+            named.append("hubspot")
+        elif any(
+            token in text
+            for token in ("call", "conversation", "buyer commitment", "stakeholder")
+        ):
+            named.append("gong")
+        elif any(
+            token in text
+            for token in ("consent", "sequence", "campaign", "email", "lifecycle")
+        ):
+            named.append("hubspot")
+        else:
+            named.append("salesforce")
+    family_defaults = {
+        "forecast-reconciliation": ("salesforce", "hubspot", "gong"),
+        "pipeline-recovery": ("gong", "salesforce", "hubspot"),
+        "gong-action-reconciliation": ("gong", "hubspot", "salesforce"),
+        "identity-migration": ("hubspot", "salesforce", "gong"),
+        "lead-routing": ("hubspot", "salesforce", "gong"),
+        "renewal-expansion": ("salesforce", "gong", "hubspot"),
+        "quote-governance": ("salesforce", "hubspot", "gong"),
+        "account-planning": ("gong", "salesforce", "hubspot"),
+        "sequence-compliance": ("hubspot", "salesforce", "gong"),
+        "cutover-audit": ("salesforce", "hubspot", "gong"),
+    }
+    ordered = [*named]
+    for system in family_defaults[spine.family]:
+        if system not in ordered:
+            ordered.append(system)
+    return tuple(ordered)  # type: ignore[return-value]
+
+
 def build_changes(
     spine: TaskSpine,
     task_number: int,
@@ -228,9 +1053,13 @@ def build_changes(
 ) -> list[dict[str, Any]]:
     targets = [entity for entity in entities if entity["target"]]
     targets.sort(key=lambda entity: entity["portfolio_key"])
+    action_spec = ACTION_SPECS[spine.slug]
     changes: list[dict[str, Any]] = []
     for sequence, entity in enumerate(targets, start=1):
-        alternate = sequence % 2 == 0
+        # The authoritative CRM follows the entity-level crosswalk rather than
+        # an artificial quota. This lets each portfolio's evidence determine
+        # both the Salesforce/HubSpot action mix and the amount of work.
+        alternate = entity["slot"] % 2 == 1
         reason = (
             f"{entity['portfolio_key']} qualifies for {FAMILY_SETTINGS[spine.family]['mutation']} "
             f"because {entity['signal']}; apply {entity['risk_code']} under the current {spine.period} policy."
@@ -470,18 +1299,87 @@ def build_changes(
                     field=field, before=before, after=after,
                     tool="updateSobjectRecord", arguments=arguments, reason=reason,
                 )
+        salesforce_after, hubspot_after = _resolved_action_values(
+            action_spec,
+            entity,
+        )
+        if change["system"] == "salesforce":
+            object_type = action_spec.salesforce_object
+            record_id = _provider_record_id(entity, "salesforce", object_type)
+            field = action_spec.salesforce_field
+            before = action_spec.salesforce_before
+            after = salesforce_after
+            arguments = {
+                "sobject-name": object_type,
+                "id": record_id,
+                "body": {field: after},
+            }
+        else:
+            object_type = action_spec.hubspot_object
+            record_id = _provider_record_id(entity, "hubspot", object_type)
+            field = action_spec.hubspot_field
+            before = action_spec.hubspot_before
+            after = hubspot_after
+            arguments = {
+                "object_type": object_type,
+                "object_id": record_id,
+                "properties": {field: after},
+            }
+        change.update(
+            {
+                "object_type": object_type,
+                "record_id": record_id,
+                "field": field,
+                "before": before,
+                "after": after,
+                "arguments": arguments,
+                "value_kind": entity["decision_facts"]["value_kind"],
+                "decision_method": entity["decision_facts"]["method"],
+                "decision_inputs": {
+                    "observed": deepcopy(
+                        entity["decision_facts"]["observed_inputs"]
+                    ),
+                    "authority": deepcopy(
+                        entity["decision_facts"]["authority_inputs"]
+                    ),
+                },
+                "decision_explanation": entity["decision_facts"]["explanation"],
+                "selected_option_id": _candidate_options(spine)[0]["id"],
+            }
+        )
+        change["reason"] = (
+            f"{entity['portfolio_key']} satisfies the current {spine.period} evidence and authority "
+            f"gates for {spine.title.casefold()}; {entity['signal']} is corroborated under "
+            f"{entity['risk_code']}."
+        )
         changes.append(change)
-    if len(changes) != TARGET_CHANGE_COUNT:
-        raise ValueError(f"expected {TARGET_CHANGE_COUNT} changes, got {len(changes)}")
+    expected_count = target_change_count(spine, task_number)
+    if len(changes) != expected_count:
+        raise ValueError(f"expected {expected_count} changes, got {len(changes)}")
     return changes
 
 
-def _event_lines(entity: dict[str, Any], task_number: int, artifact_number: int) -> list[str]:
+def _event_lines(
+    spine: TaskSpine,
+    entity: dict[str, Any],
+    task_number: int,
+    artifact_number: int,
+) -> list[str]:
     base = date(2026, 5, 1) + timedelta(days=(task_number + artifact_number) % 50)
+    observed_items = list(entity["decision_facts"]["observed_inputs"].items())
+    details = [
+        f"business request opened: {spine.title}",
+        f"buyer-supported observation: {entity['signal']}",
+        *[f"{key.replace('_', ' ')} recorded as {value}" for key, value in observed_items[:3]],
+        f"independent review retained risk classification {entity['risk_code']}",
+    ]
     return [
-        f"{(base + timedelta(days=offset * 5)).isoformat()} | EVT-{task_number:03d}-{artifact_number:03d}-{offset + 1} | "
-        f"{('buyer' if offset % 2 == 0 else 'seller')} | {SIGNALS[(entity['slot'] + offset) % len(SIGNALS)]}"
-        for offset in range(34)
+        (
+            f"{(base + timedelta(days=offset * 4)).isoformat()} | "
+            f"EVT-{task_number:03d}-{artifact_number:03d}-{offset + 1} | "
+            f"{('buyer' if offset % 2 == 0 else 'operations')} | {detail}"
+        )
+        for offset, detail in enumerate(details)
     ]
 
 
@@ -495,36 +1393,129 @@ def _artifact_payload(
     entity: dict[str, Any],
     change: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    role = EVIDENCE_ROLE_FOLDERS[spine.family][folder]
+    action_spec = ACTION_SPECS[spine.slug]
+    salesforce_object = action_spec.salesforce_object
+    hubspot_object = action_spec.hubspot_object
+    salesforce_record_id = _provider_record_id(
+        entity, "salesforce", salesforce_object
+    )
+    hubspot_record_id = _provider_record_id(entity, "hubspot", hubspot_object)
+    gong_call = _gong_evidence_call(spine, entity)
+    gong_lookup_key = str(
+        gong_call["arguments"].get("crmDealId")
+        or gong_call["arguments"].get("crmAccountId")
+        or gong_call["arguments"].get("crmEntityId")
+    )
+    hold_reason = _hold_reason(entity)
+    supported = change is not None
     control = {
         "task_id": task_id,
         "portfolio_key": entity["portfolio_key"],
         "account_name": entity["account_name"],
-        "salesforce_account_id": entity["sf_account_id"],
-        "salesforce_opportunity_id": entity["sf_opportunity_id"],
-        "hubspot_company_id": entity["hs_company_id"],
-        "hubspot_deal_id": entity["hs_deal_id"],
-        "gong_evidence_id": entity["evidence_id"],
         "period": spine.period,
         "as_of": _as_of(task_number),
         "folder": folder,
+        "evidence_role": role,
         "source_version": f"v{1 + artifact_number % 4}.{artifact_number % 9}",
         "classification": "synthetic-confidential",
     }
-    decision = {
-        "eligible_for_requested_workflow": bool(change),
-        "decision_code": change["id"] if change else f"HOLD-{task_number:03d}-{entity['slot'] + 1:02d}",
-        "authorized_system": change["system"] if change else "none",
-        "authorized_record_id": change["record_id"] if change else "none",
-        "authorized_field": change["field"] if change else "none",
-        "current_value": change["before"] if change else "unchanged",
-        "required_value": change["after"] if change else "unchanged",
-        "reason": change["reason"] if change else (
-            f"{entity['portfolio_key']} is a control record. Evidence does not authorize a mutation; "
-            "retain current state and include it only in coverage counts."
-        ),
-        "owner": entity["owner_name"],
-        "deadline": entity["deadline"],
-    }
+    evidence: dict[str, Any]
+    if role == "identity_crosswalk":
+        evidence = {
+            "legal_name": entity["account_name"],
+            "domain": entity["domain"],
+            "salesforce_account_id": entity["sf_account_id"],
+            "salesforce_opportunity_id": entity["sf_opportunity_id"],
+            "hubspot_company_id": entity["hs_company_id"],
+            "hubspot_deal_id": entity["hs_deal_id"],
+            "governed_salesforce_object": salesforce_object,
+            "governed_salesforce_record_id": salesforce_record_id,
+            "governed_hubspot_object": hubspot_object,
+            "governed_hubspot_record_id": hubspot_record_id,
+            "identity_review": (
+                "ambiguous_parent_or_alias"
+                if not supported and hold_reason == "identity_ambiguous"
+                else "independently_matched"
+            ),
+            "match_basis": ["legal name", "domain", "external ID crosswalk"],
+        }
+    elif role == "operating_observation":
+        evidence = {
+            "observed_signal": entity["signal"],
+            "risk_code": entity["risk_code"],
+            "observation_status": (
+                "conflicts_with_current_period_register"
+                if not supported and hold_reason == "source_conflict"
+                else "corroborated"
+            ),
+            "effective_period": (
+                "superseded-prior-period"
+                if not supported and hold_reason == "outside_current_period"
+                else spine.period
+            ),
+            "decision_inputs": entity["decision_facts"]["observed_inputs"],
+            "events": _event_lines(spine, entity, task_number, artifact_number),
+        }
+    elif role == "authority_record":
+        evidence = {
+            "requester": spine.requester,
+            "owner": entity["owner_name"],
+            "owner_role": entity["owner_role"],
+            "response_due": entity["deadline"],
+            "approval_status": (
+                "pending_secondary_approval"
+                if not supported and hold_reason == "approval_pending"
+                else "approved_within_policy"
+            ),
+            "authorized_period": spine.period,
+            "decision_control_inputs": entity["decision_facts"]["authority_inputs"],
+            "scope": "Only records whose identity, effective evidence, live state, and governed rule all agree.",
+        }
+    elif role == "governed_transition":
+        evidence = {
+            "policy_version": f"{spine.period}-controlled",
+            "decision_table": governed_policy(spine),
+            "prohibitions": [
+                "no bulk sync from timestamp alone",
+                "no mutation when one controlling source conflicts",
+                "no copying private Gong transcript text",
+            ],
+        }
+    elif role == "live_system_corroboration":
+        evidence = {
+            "systems_to_reconcile": ["Salesforce", "HubSpot", "Gong"],
+            "salesforce_object": salesforce_object,
+            "salesforce_lookup_key": salesforce_record_id,
+            "hubspot_object": hubspot_object,
+            "hubspot_lookup_key": hubspot_record_id,
+            "gong_tool": gong_call["name"],
+            "gong_lookup_key": gong_lookup_key,
+            "gong_evidence_id": entity["evidence_id"],
+            "required_checks": [
+                "current provider value",
+                "cross-system account association",
+                "permitted buyer-supported signal",
+            ],
+            "warning": "This record is an index, not proof that the live values agree.",
+        }
+    else:
+        evidence = {
+            "review_status": "no_exception_recorded" if supported else "unresolved_exception",
+            "exception_type": "none" if supported else hold_reason,
+            "source_note": (
+                "No unresolved control exception was recorded for this portfolio key."
+                if supported
+                else {
+                    "approval_pending": "The secondary approver has not signed the current-period request.",
+                    "source_conflict": "The current-period register and the latest seller note disagree.",
+                    "identity_ambiguous": "The parent and carved-out entity share a domain but not a confirmed external ID.",
+                    "outside_current_period": "The supporting observation belongs to a superseded period.",
+                }[hold_reason]
+            ),
+            "disposition_owner": entity["owner_name"],
+            "review_by": entity["deadline"],
+        }
     payload = {
         "record_control": control,
         "business_context": {
@@ -539,26 +1530,14 @@ def _artifact_payload(
             "owner": entity["owner_name"],
             "owner_role": entity["owner_role"],
         },
-        "evidence": {
-            "signal": entity["signal"],
-            "risk_code": entity["risk_code"],
-            "gong_summary": (
-                f"Permitted Gong insight {entity['evidence_id']} supports {entity['signal']} "
-                "without exposing raw or private transcript content."
-            ),
-            "source_of_truth": (
-                f"For {spine.family}, apply the field-specific current-period rule. "
-                "A CRM timestamp alone never overrides the evidence register."
-            ),
-            "events": _event_lines(entity, task_number, artifact_number),
-        },
-        "decision": decision,
+        "evidence": evidence,
         "controls": {
             "gong_is_read_only": True,
             "deletes_authorized": False,
             "neighboring_records_must_remain_unchanged": True,
             "private_call_content_may_be_copied": False,
             "duplicate_mutations_allowed": False,
+            "single_document_is_sufficient": False,
         },
     }
     if folder == "12_deliverables":
@@ -574,19 +1553,35 @@ def _artifact_payload(
                 "source, and the live Salesforce, HubSpot, and permitted Gong evidence agree. "
                 "Unresolved or control records remain unchanged."
             ),
+            "candidate_approaches": _candidate_options(spine),
             "required_outputs": {
                 "changes.json": {
                     "schema_version": "salesbench.changes.v1",
-                    "top_level_fields": ["task_id", "title", "company", "as_of", "changes"],
+                    "top_level_fields": [
+                        "task_id", "title", "company", "as_of", "decision_summary",
+                        "changes", "holds",
+                    ],
+                    "decision_summary_fields": [
+                        "selected_option_id", "value_kind", "method", "actionable_records",
+                        "held_records", "alternatives_considered",
+                    ],
                     "change_fields": [
                         "id", "system", "object_type", "record_id", "operation", "field",
                         "before", "after", "reason", "primary_source", "corroborating_source",
-                        "gong_evidence_id", "owner", "deadline", "portfolio_key",
+                        "gong_evidence_id", "owner", "deadline", "portfolio_key", "value_kind",
+                        "decision_method", "decision_inputs", "decision_explanation",
+                        "selected_option_id", "evidence_sources",
+                    ],
+                    "hold_fields": [
+                        "id", "portfolio_key", "account_name", "blocking_condition",
+                        "primary_source", "corroborating_source", "owner", "deadline",
+                        "required_next_step",
                     ],
                 },
                 "brief.md": {
                     "sections": [
-                        "Executive assessment", "Review method and system coverage",
+                        "Executive assessment", "Decision and alternatives",
+                        "Review method and system coverage",
                         "Authorized changes", "Holds and unresolved conflicts",
                         "Control confirmation", "Next operating cadence",
                     ],
@@ -646,6 +1641,133 @@ def _render_payload(payload: dict[str, Any], extension: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_collection(
+    *,
+    folder: str,
+    extension: str,
+    payloads: list[dict[str, Any]],
+) -> str:
+    """Render one production-style source containing a multi-record register."""
+
+    first = payloads[0]
+    collection = {
+        "source_register": {
+            "task_id": first["record_control"]["task_id"],
+            "folder": folder,
+            "evidence_role": first["record_control"]["evidence_role"],
+            "effective_period": first["record_control"]["period"],
+            "record_count": len(payloads),
+            "control_note": (
+                "Rows are independent source observations. Join by portfolio key and "
+                "effective revision; this register does not select an action."
+            ),
+        },
+        "records": payloads,
+    }
+    if extension == "json":
+        return json.dumps(collection, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    if extension == "csv":
+        stream = io.StringIO()
+        columns = (
+            "task_id",
+            "portfolio_key",
+            "account_name",
+            "period",
+            "as_of",
+            "evidence_role",
+            "source_version",
+            "amount_usd",
+            "stage",
+            "close_date",
+            "owner",
+            "evidence_json",
+        )
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        for payload in payloads:
+            control = payload["record_control"]
+            context = payload["business_context"]
+            writer.writerow(
+                {
+                    "task_id": control["task_id"],
+                    "portfolio_key": control["portfolio_key"],
+                    "account_name": control["account_name"],
+                    "period": control["period"],
+                    "as_of": control["as_of"],
+                    "evidence_role": control["evidence_role"],
+                    "source_version": control["source_version"],
+                    "amount_usd": context["amount_usd"],
+                    "stage": context["stage"],
+                    "close_date": context["close_date"],
+                    "owner": context["owner"],
+                    "evidence_json": json.dumps(
+                        payload["evidence"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                }
+            )
+        return stream.getvalue()
+    if extension == "eml":
+        control = first["record_control"]
+        summaries = "\n".join(
+            "- "
+            + json.dumps(
+                {
+                    "portfolio_key": payload["record_control"]["portfolio_key"],
+                    "account_name": payload["record_control"]["account_name"],
+                    "evidence_role": payload["record_control"]["evidence_role"],
+                    "evidence": payload["evidence"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for payload in payloads
+        )
+        return (
+            f"From: revenue-operations@{control['task_id']}.example\n"
+            f"To: portfolio-review@{control['task_id']}.example\n"
+            "Date: Wed, 26 Aug 2026 12:00:00 -0700\n"
+            f"Subject: {folder.replace('_', ' ').title()} — controlled portfolio update\n"
+            "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n"
+            "Team,\n\n"
+            "Below is the current controlled register. It is one input to the review, "
+            "not a pre-approved mutation list. Reconcile each key against the other "
+            "sources and live systems.\n\n"
+            f"{summaries}\n\nRegards,\nRevenue Operations Controls\n"
+        )
+    if extension in {"xml", "html"}:
+        return _render_payload(collection, extension)
+
+    heading = "#" if extension == "md" else ""
+    lines = [
+        f"{heading} {folder.replace('_', ' ').title()}".strip(),
+        "",
+        collection["source_register"]["control_note"],
+        "",
+        "| Portfolio key | Account | Source revision | Evidence role |",
+        "|---|---|---|---|",
+    ]
+    for payload in payloads:
+        control = payload["record_control"]
+        lines.append(
+            f"| {control['portfolio_key']} | {control['account_name']} | "
+            f"{control['source_version']} | {control['evidence_role']} |"
+        )
+    lines.extend(["", "## Controlled record details", ""])
+    for payload in payloads:
+        control = payload["record_control"]
+        lines.extend(
+            [
+                f"### {control['portfolio_key']} — {control['account_name']}",
+                "",
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                "",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
 def build_documents(
     spine: TaskSpine,
     task_id: str,
@@ -654,16 +1776,26 @@ def build_documents(
     changes: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, list[str]]]:
     changes_by_key = {change["portfolio_key"]: change for change in changes}
-    folders = FAMILY_SETTINGS[spine.family]["folders"]
+    folders = list(FAMILY_SETTINGS[spine.family]["folders"])
     documents: dict[str, str] = {}
-    paths_by_key: dict[str, list[str]] = {entity["portfolio_key"]: [] for entity in entities}
+    paths_by_key_and_role: dict[str, dict[str, str]] = {
+        entity["portfolio_key"]: {} for entity in entities
+    }
+    role_occurrences = {role: 0 for role in EVIDENCE_ROLES}
     for folder_index, folder in enumerate(folders):
-        for file_index, extension in enumerate(EXTENSIONS):
-            artifact_number = folder_index * len(EXTENSIONS) + file_index + 1
-            entity = entities[(artifact_number - 1) % len(entities)]
-            filename = f"{artifact_number:03d}_{entity['portfolio_key'].lower()}_{folder}.{extension}"
-            relative = f"{folder}/{filename}"
-            payload = _artifact_payload(
+        role = EVIDENCE_ROLE_FOLDERS[spine.family][folder]
+        occurrence = role_occurrences[role]
+        role_occurrences[role] += 1
+        role_index = EVIDENCE_ROLES.index(role)
+        entity_offset = occurrence * (PORTFOLIO_ENTITY_COUNT // 2)
+        selected_entities = entities[
+            entity_offset : entity_offset + PORTFOLIO_ENTITY_COUNT // 2
+        ]
+        extension = EXTENSIONS[folder_index]
+        payloads: list[dict[str, Any]] = []
+        for entity in selected_entities:
+            artifact_number = role_index * PORTFOLIO_ENTITY_COUNT + entity["slot"] + 1
+            payloads.append(_artifact_payload(
                 spine=spine,
                 task_id=task_id,
                 task_number=task_number,
@@ -671,13 +1803,24 @@ def build_documents(
                 artifact_number=artifact_number,
                 entity=entity,
                 change=changes_by_key.get(entity["portfolio_key"]),
-            )
-            documents[relative] = _render_payload(payload, extension)
-            paths_by_key[entity["portfolio_key"]].append(
-                str(PurePosixPath("/workspace/documents") / relative)
+            ))
+        filename = f"{folder_index + 1:02d}_{folder}_register.{extension}"
+        relative = f"{folder}/{filename}"
+        documents[relative] = _render_collection(
+            folder=folder,
+            extension=extension,
+            payloads=payloads,
+        )
+        for entity in selected_entities:
+            paths_by_key_and_role[entity["portfolio_key"]][role] = str(
+                PurePosixPath("/workspace/documents") / relative
             )
     if len(documents) != DOCUMENT_COUNT:
         raise ValueError(f"expected {DOCUMENT_COUNT} documents, got {len(documents)}")
+    paths_by_key = {
+        portfolio_key: [role_paths[role] for role in EVIDENCE_ROLES]
+        for portfolio_key, role_paths in paths_by_key_and_role.items()
+    }
     return documents, paths_by_key
 
 
@@ -798,6 +1941,14 @@ def build_seed(
         gong_accounts[entity["gong_account_id"]] = deepcopy(gong_payload)
         gong_deals[entity["gong_deal_id"]] = deepcopy(gong_payload)
 
+    action_spec = ACTION_SPECS[spine.slug]
+    for row in sf[action_spec.salesforce_object]:
+        row[action_spec.salesforce_field] = deepcopy(action_spec.salesforce_before)
+    for row in hs[action_spec.hubspot_object]:
+        row["properties"][action_spec.hubspot_field] = deepcopy(
+            action_spec.hubspot_before
+        )
+
     for slot in range(DISTRACTOR_ENTITY_COUNT):
         sf["Account"].append({
             "Id": _sf_id("001", task_number + 500, slot),
@@ -865,6 +2016,11 @@ def _reference_calls(
     metadata_paths: list[str],
 ) -> list[dict[str, Any]]:
     entity_by_key = {entity["portfolio_key"]: entity for entity in entities}
+    action_spec = ACTION_SPECS[spine.slug]
+    salesforce_object = action_spec.salesforce_object
+    hubspot_object = action_spec.hubspot_object
+    salesforce_field = action_spec.salesforce_field
+    hubspot_field = action_spec.hubspot_field
     orientation: list[dict[str, Any]] = [
         {"server": "filesystem", "name": "list_allowed_directories", "arguments": {}},
         {"server": "filesystem", "name": "directory_tree", "arguments": {"path": "/workspace/documents", "excludePatterns": []}},
@@ -873,37 +2029,40 @@ def _reference_calls(
     system_discovery: list[dict[str, Any]] = [
         {"server": "salesforce", "name": "getUserInfo", "arguments": {}},
         {"server": "salesforce", "name": "getObjectSchema", "arguments": {}},
-        {"server": "salesforce", "name": "getObjectSchema", "arguments": {"object-name": "Opportunity"}},
+        {"server": "salesforce", "name": "getObjectSchema", "arguments": {"object-name": salesforce_object}},
         {"server": "hubspot", "name": "hubspot_get_account_details", "arguments": {}},
-        {"server": "hubspot", "name": "hubspot_get_object_schema", "arguments": {"object_type": "deals"}},
-        {"server": "hubspot", "name": "hubspot_list_pipelines", "arguments": {"object_type": "deals"}},
+        {"server": "hubspot", "name": "hubspot_get_object_schema", "arguments": {"object_type": hubspot_object}},
+        (
+            {"server": "hubspot", "name": "hubspot_list_pipelines", "arguments": {"object_type": "deals"}}
+            if hubspot_object == "deals"
+            else {
+                "server": "hubspot",
+                "name": "hubspot_list_objects",
+                "arguments": {
+                    "object_type": hubspot_object,
+                    "limit": 1,
+                    "properties": [hubspot_field, "salesbench_key"],
+                    "associations": [],
+                    "archived": False,
+                },
+            }
+        ),
     ]
 
-    # A real operator does not inspect every account room in one mechanical
-    # global order.  Keep the same complete evidence coverage, but let each
-    # authored business case determine how workstreams, custody checks, system
-    # discovery, and record reviews are interleaved.  The resulting 100
-    # reference tool-name sequences are unique while the verifier remains
-    # outcome- and prerequisite-based rather than order-based.
+    # Follow a business-derived order: orient to the systems, then reconcile
+    # evidence sources in the authored workflow order.  Diversity must come
+    # from different supported records and actions, not shuffled file reads.
     paths_by_folder: dict[str, list[str]] = {}
     for path in document_paths:
         folder = PurePosixPath(path).parts[-2]
         paths_by_folder.setdefault(folder, []).append(path)
-    folders = sorted(paths_by_folder)
-    rng = random.Random(stable_seed(f"{spine.family}:{spine.slug}:{task_number}:reference"))
-    rng.shuffle(folders)
-    markers = [*orientation[1:], *system_discovery]
-    rng.shuffle(markers)
+    folders = list(FAMILY_SETTINGS[spine.family]["folders"])
     metadata_by_folder = {
         PurePosixPath(path).parts[-2]: path for path in metadata_paths
     }
-    calls: list[dict[str, Any]] = [orientation[0]]
-    for folder_index, folder in enumerate(folders):
-        if folder_index < len(markers):
-            calls.append(markers[folder_index])
-        paths = list(paths_by_folder[folder])
-        rotation = (task_number + folder_index) % len(paths)
-        paths = paths[rotation:] + paths[:rotation]
+    calls: list[dict[str, Any]] = [*orientation, *system_discovery]
+    for folder in folders:
+        paths = sorted(paths_by_folder[folder])
         calls.extend(
             {"server": "filesystem", "name": "read_text_file", "arguments": {"path": path}}
             for path in paths
@@ -916,41 +2075,139 @@ def _reference_calls(
                     "arguments": {"path": metadata_by_folder[folder]},
                 }
             )
-    calls.extend(markers[len(folders):])
 
-    ordered_changes = list(changes)
-    rng.shuffle(ordered_changes)
-    for change_index, change in enumerate(ordered_changes):
+    ordered_changes = sorted(
+        changes,
+        key=lambda change: (
+            entity_by_key[change["portfolio_key"]]["deadline"],
+            -entity_by_key[change["portfolio_key"]]["amount"],
+            change["portfolio_key"],
+        ),
+    )
+    for change in ordered_changes:
         entity = entity_by_key[change["portfolio_key"]]
-        evidence_calls = [
-            {
+        salesforce_id = _provider_record_id(
+            entity, "salesforce", salesforce_object
+        )
+        hubspot_id = _provider_record_id(entity, "hubspot", hubspot_object)
+        evidence_calls = {
+            "salesforce": {
                 "server": "salesforce", "name": "soqlQuery",
-                "arguments": {"query": f"SELECT Id, Name, Amount, StageName, CloseDate, ForecastCategoryName, NextStep, OwnerId, SalesBenchKey__c FROM Opportunity WHERE Id = '{entity['sf_opportunity_id']}' LIMIT 1"},
+                "arguments": {
+                    "query": (
+                        f"SELECT Id, {salesforce_field}, SalesBenchKey__c "
+                        f"FROM {salesforce_object} WHERE Id = '{salesforce_id}' LIMIT 1"
+                    )
+                },
             },
-            {
+            "hubspot": {
                 "server": "hubspot", "name": "hubspot_get_object",
                 "arguments": {
-                    "object_type": "deals", "object_id": entity["hs_deal_id"],
-                    "properties": ["dealname", "amount", "dealstage", "closedate", "forecast_status", "next_step", "salesbench_key"],
-                    "associations": ["companies"],
+                    "object_type": hubspot_object,
+                    "object_id": hubspot_id,
+                    "properties": [hubspot_field, "salesbench_key"],
+                    "associations": ["companies"] if hubspot_object == "deals" else [],
                 },
             },
+            "gong": _gong_evidence_call(spine, entity),
+        }
+        calls.extend(
             {
-                "server": "gong", "name": "ask_deal",
-                "arguments": {
-                    "workspaceId": f"ws-{int(entity['portfolio_key'].split('-')[1]):03d}",
-                    "crmDealId": entity["gong_deal_id"], "timePeriod": "THIS_QUARTER",
-                    "question": "What buyer-supported next step, blocker, or decision is established for this deal?",
-                },
-            },
-        ]
-        evidence_rotation = (task_number + change_index) % len(evidence_calls)
-        evidence_calls = evidence_calls[evidence_rotation:] + evidence_calls[:evidence_rotation]
-        calls.extend(evidence_calls)
+                **evidence_calls[system],
+                "phase": "prewrite_provider_evidence",
+                "change_id": change["id"],
+            }
+            for system in provider_evidence_order(spine)
+        )
         calls.append(
-            {"server": change["system"], "name": change["tool"], "arguments": deepcopy(change["arguments"])}
+            {
+                "server": change["system"],
+                "name": change["tool"],
+                "arguments": deepcopy(change["arguments"]),
+                "phase": "authorized_mutation",
+                "change_id": change["id"],
+            }
+        )
+        if change["system"] == "salesforce":
+            readback = {
+                "server": "salesforce",
+                "name": "soqlQuery",
+                "arguments": {
+                    "query": (
+                        f"SELECT Id, {change['field']} FROM {change['object_type']} "
+                        f"WHERE Id = '{change['record_id']}' LIMIT 1"
+                    )
+                },
+            }
+        else:
+            readback = {
+                "server": "hubspot",
+                "name": "hubspot_get_object",
+                "arguments": {
+                    "object_type": change["object_type"],
+                    "object_id": change["record_id"],
+                    "properties": [change["field"]],
+                    "associations": [],
+                },
+            }
+        change["postwrite_evidence"] = {
+            **deepcopy(readback),
+            "expected_field": change["field"],
+            "expected_value": change["after"],
+        }
+        calls.append(
+            {
+                **readback,
+                "phase": "postwrite_readback",
+                "change_id": change["id"],
+            }
         )
     return calls
+
+
+def _build_holds(
+    task_number: int,
+    entities: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+    paths_by_key: dict[str, list[str]],
+) -> list[dict[str, Any]]:
+    changed_keys = {change["portfolio_key"] for change in changes}
+    corroborating_role = {
+        "approval_pending": 2,
+        "source_conflict": 1,
+        "identity_ambiguous": 0,
+        "outside_current_period": 1,
+    }
+    next_steps = {
+        "approval_pending": "Obtain the missing current-period secondary approval, then re-run the full control join.",
+        "source_conflict": "Resolve the current-period source conflict with the named owner before changing either CRM.",
+        "identity_ambiguous": "Confirm the immutable external-ID mapping for the legal entity and carved-out account.",
+        "outside_current_period": "Collect a current-period operating observation and revalidate it against live provider state.",
+    }
+    holds: list[dict[str, Any]] = []
+    for entity in entities:
+        if entity["portfolio_key"] in changed_keys:
+            continue
+        reason = _hold_reason(entity)
+        sources = paths_by_key[entity["portfolio_key"]]
+        if len(sources) != len(EVIDENCE_ROLES):
+            raise ValueError(
+                f"expected {len(EVIDENCE_ROLES)} source roles for {entity['portfolio_key']}"
+            )
+        holds.append(
+            {
+                "id": f"HLD-{task_number:03d}-{entity['slot'] + 1:02d}",
+                "portfolio_key": entity["portfolio_key"],
+                "account_name": entity["account_name"],
+                "blocking_condition": reason,
+                "primary_source": sources[5],
+                "corroborating_source": sources[corroborating_role[reason]],
+                "owner": entity["owner_name"],
+                "deadline": entity["deadline"],
+                "required_next_step": next_steps[reason],
+            }
+        )
+    return holds
 
 
 def _reference_outputs(
@@ -958,36 +2215,68 @@ def _reference_outputs(
     spine: TaskSpine,
     task_number: int,
     changes: list[dict[str, Any]],
+    holds: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], str]:
+    options = _decision_options(spine, task_number, len(changes))
+    selected = next(option for option in options if option["selected"])
     public_changes = [
         {
             key: change[key]
             for key in (
                 "id", "system", "object_type", "record_id", "operation", "field",
                 "before", "after", "reason", "primary_source", "corroborating_source",
-                "gong_evidence_id", "owner", "deadline", "portfolio_key",
+                "gong_evidence_id", "owner", "deadline", "portfolio_key", "value_kind",
+                "decision_method", "decision_inputs", "decision_explanation",
+                "selected_option_id", "evidence_sources",
             )
         }
         for change in changes
     ]
+    decision_summary = {
+        "selected_option_id": selected["id"],
+        "value_kind": ACTION_SPECS[spine.slug].value_kind,
+        "method": _decision_method(spine),
+        "actionable_records": len(public_changes),
+        "held_records": len(holds),
+        "alternatives_considered": [option["id"] for option in options],
+    }
     payload = {
         "schema_version": "salesbench.changes.v1",
         "task_id": task_id,
         "title": spine.title,
         "company": spine.company,
         "as_of": _as_of(task_number),
+        "decision_summary": decision_summary,
         "changes": public_changes,
+        "holds": holds,
     }
     sections = [
         f"# {spine.title}",
         "",
         "## Executive assessment",
         "",
-        spine.narrative,
+        (
+            f"{spine.narrative} The evidence supports {len(public_changes)} bounded changes; "
+            f"{len(holds)} portfolio records remain on hold."
+        ),
+        "",
+        "## Decision and alternatives",
+        "",
+        f"Selected option: {selected['id']} — {selected['label']}.",
+        f"Method: {decision_summary['method']}.",
+        "Alternatives considered:",
+        *[
+            f"- {option['id']} — {option['label']}: {option['reason']}"
+            for option in options
+        ],
         "",
         "## Review method and system coverage",
         "",
-        "Reviewed all 96 seeded artifacts, validated live records in Salesforce and HubSpot, and used Gong only for permitted synthesized insights.",
+        (
+            "Reviewed all 12 multi-record source assets, joined six independent evidence roles "
+            "for every portfolio key, validated live records in Salesforce and HubSpot, and used "
+            "Gong only for permitted synthesized insights."
+        ),
         "",
         "## Authorized changes",
         "",
@@ -999,7 +2288,11 @@ def _reference_outputs(
                 "",
                 f"System: {change['system']}; object: {change['object_type']}; record: {change['record_id']}; field: {change['field']}.",
                 f"Changed {change['before']} to {change['after']}. {change['reason']}",
+                f"Derivation: {change['decision_method']}. {change['decision_explanation']}",
+                f"Inputs: {json.dumps(change['decision_inputs'], ensure_ascii=False, sort_keys=True)}.",
+                f"Selected approach: {change['selected_option_id']}.",
                 f"Evidence: {change['primary_source']} and {change['corroborating_source']}; Gong insight {change['gong_evidence_id']}.",
+                f"Complete evidence join: {', '.join(change['evidence_sources'])}.",
                 f"Owner: {change['owner']}; deadline: {change['deadline']}.",
                 "",
             ]
@@ -1008,8 +2301,28 @@ def _reference_outputs(
         [
             "## Holds and unresolved conflicts",
             "",
-            "Four control portfolio records remained unchanged because the evidence register did not authorize a mutation.",
+            f"{len(holds)} portfolio records remained unchanged:",
             "",
+        ]
+    )
+    for hold in holds:
+        sections.extend(
+            [
+                f"### {hold['id']} — {hold['portfolio_key']}",
+                "",
+                (
+                    f"{hold['account_name']} remains unchanged for {hold['blocking_condition']}. "
+                    f"Evidence: {hold['primary_source']} and {hold['corroborating_source']}."
+                ),
+                (
+                    f"Next step: {hold['required_next_step']} Owner: {hold['owner']}; "
+                    f"deadline: {hold['deadline']}."
+                ),
+                "",
+            ]
+        )
+    sections.extend(
+        [
             "## Control confirmation",
             "",
             "No Gong data was changed, no record was deleted, no neighboring row was edited, and no private call content was copied.",
@@ -1023,39 +2336,93 @@ def _reference_outputs(
     return payload, "\n".join(sections)
 
 
-def _decision_options(spine: TaskSpine, task_number: int) -> list[dict[str, Any]]:
+def _decision_options(
+    spine: TaskSpine,
+    task_number: int,
+    change_count: int,
+) -> list[dict[str, Any]]:
     """Public alternatives the employee request genuinely leaves open."""
 
     as_of = _as_of(task_number)
+    options = _candidate_options(spine)
+    reasons = (
+        (
+            f"The independently controlled evidence effective on {as_of} and the live provider "
+            f"state agree for {change_count} portfolio keys."
+        ),
+        (
+            f"This shortcut ignores at least one controlling input and would also alter "
+            f"{PORTFOLIO_ENTITY_COUNT - change_count} held records."
+        ),
+        (
+            f"This avoids damage but leaves {change_count} evidence-supported records unresolved."
+        ),
+    )
     return [
         {
-            "id": "evidence_backed_repair",
-            "label": f"Repair only the supported {spine.period} records",
-            "selected": True,
-            "reason": (
-                f"The controlling and corroborating records effective on {as_of} agree with "
-                "the live CRM and permitted Gong evidence for twelve portfolio keys."
-            ),
-        },
-        {
-            "id": "latest_timestamp_bulk_sync",
-            "label": "Trust the newest CRM timestamp and bulk-sync the portfolio",
-            "selected": False,
-            "reason": (
-                "The task evidence explicitly shows retries, imports, or seller edits whose timestamps "
-                "are newer but not authoritative; this would also change the four control records."
-            ),
-        },
-        {
-            "id": "hold_entire_portfolio",
-            "label": "Hold every record until all source systems agree verbatim",
-            "selected": False,
-            "reason": (
-                f"That avoids damage but leaves the evidence-supported {FAMILY_SETTINGS[spine.family]['mutation']} "
-                f"unfinished for {spine.company}."
-            ),
-        },
+            **option,
+            "selected": index == 0,
+            "reason": reasons[index],
+        }
+        for index, option in enumerate(options)
     ]
+
+
+def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
+    """Explain the causal business proof, not merely the final API calls."""
+
+    objects = sorted(
+        {
+            f"{change['system']}.{change['object_type']}.{change['field']}"
+            for change in spec["expected_changes"]
+        }
+    )
+    selected = spec["expected_decision_summary"]["selected_option_id"]
+    alternatives = spec["expected_decision_summary"]["alternatives_considered"]
+    return {
+        "business_outcome": (
+            f"Resolve {spec['title'].casefold()} for {spec['company']} as of {spec['as_of']}: "
+            f"act on the {spec['expected_change_count']} supported portfolio rows and explicitly "
+            f"hold the other {spec['expected_hold_count']} rows."
+        ),
+        "investigation": (
+            f"The model must inventory all {len(spec['required_document_paths'])} multi-record assets, "
+            "join each portfolio key across identity, operating observation, authority, governed "
+            "transition, live-system index, and exception evidence, then inspect the corresponding "
+            f"live records in Salesforce, HubSpot, and Gong. Governed targets: {', '.join(objects)}."
+        ),
+        "reasoning": (
+            f"For every candidate row, apply {spec['expected_decision_summary']['method']!r} to the "
+            "independently split observation and authority inputs. Reject rows with a pending approval, "
+            "source conflict, ambiguous identity, or superseded-period evidence. Compare all candidate "
+            f"approaches ({', '.join(alternatives)}) and justify selecting {selected}."
+        ),
+        "state_transition": (
+            "Write only the task-scoped provider object, immutable record ID, and authorized field/value "
+            "for each supported row, exactly once. Every held row, neighboring record, Gong object, and "
+            "unrelated field must remain unchanged."
+        ),
+        "verification": (
+            "After each write, query that exact record again and observe the intended field value; a "
+            "successful mutation acknowledgement without readback is insufficient. Then produce the "
+            "structured decision summary, per-row inputs and derivation, exact held-case blockers, and "
+            "human handoff through the filesystem MCP."
+        ),
+        "required_inferences": [
+            {
+                "change_id": change["id"],
+                "portfolio_key": change["portfolio_key"],
+                "provider_target": (
+                    f"{change['system']}.{change['object_type']}.{change['record_id']}."
+                    f"{change['field']}"
+                ),
+                "method": change["decision_method"],
+                "inputs": change["decision_inputs"],
+                "derived_value": change["after"],
+            }
+            for change in spec["expected_changes"]
+        ],
+    }
 
 
 def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1076,10 +2443,6 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
         })
 
     procedure = {
-        "minimum_relevant_unique_tool_calls": (
-            f"Use at least {spec['minimum_tool_calls']} distinct successful, argument-specific MCP calls; "
-            "repeating one lookup does not create credit."
-        ),
         "all_evidence_read_in_full": (
             f"Read all {len(spec['required_document_paths'])} task-scoped source records in full before relying on them."
         ),
@@ -1092,6 +2455,18 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
         "all_salesforce_evidence_queried": "Query the Salesforce record corresponding to every proposed portfolio correction.",
         "all_hubspot_evidence_retrieved": "Retrieve the HubSpot record corresponding to every proposed portfolio correction.",
         "all_gong_evidence_queried": "Use the permitted Gong deal insight for every proposed portfolio correction.",
+        "all_required_evidence_precedes_mutation": (
+            "Read the identity, operating, authority, policy, live-system index, and exception records "
+            "before the first CRM mutation."
+        ),
+        "all_provider_evidence_precedes_mutation": (
+            "For each changed record, inspect its live Salesforce, HubSpot, and permitted Gong evidence "
+            "before changing that record."
+        ),
+        "all_mutations_verified_by_readback": (
+            "After every CRM mutation, retrieve that exact immutable record again and observe the "
+            "derived field at its intended value."
+        ),
         "exact_deliverable_set": "Leave only changes.json and brief.md in the output workspace.",
         "deliverables_written_through_mcp": "Create both final deliverables through the filesystem MCP surface.",
     }
@@ -1105,7 +2480,19 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
         add("state", f"{prefix}.target_value", f"Leave {target} at the supported value {change['after']!r}.")
         add("state", f"{prefix}.authorized_fields", f"Change only the provider fields authorized for {prefix} on {change['record_id']}.")
         add("state", f"{prefix}.exactly_one_authorized_call", f"Apply the authorized {change['tool']} mutation for {prefix} exactly once.")
-    add("state", "entire_business_state_exact", "Choose the evidence-backed records: all twelve supported changes land and every control or neighboring record remains byte-for-byte unchanged.")
+        add(
+            "state",
+            f"{prefix}.postwrite_readback",
+            f"Read {target} after the mutation and verify the observed value is {change['after']!r}.",
+        )
+    add(
+        "state",
+        "entire_business_state_exact",
+        (
+            f"Choose the evidence-backed records: all {spec['expected_change_count']} supported changes land "
+            "and every held or neighboring record remains byte-for-byte unchanged."
+        ),
+    )
     add("state", "no_delete_tool_succeeded", "Complete the work without deleting any CRM record.")
     add("state", "gong_remained_read_only", "Keep Gong read-only throughout the workflow.")
 
@@ -1114,10 +2501,17 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
     add("changes", "change_ids_unique", "Use every authorized change ID once and only once.")
     for field in ("schema_version", "task_id", "title", "company", "as_of"):
         add("changes", f"top_level.{field}", f"Set changes.json top-level {field} to this task's exact released value.")
+    for field, expected in spec["expected_decision_summary"].items():
+        add(
+            "changes",
+            f"decision_summary.{field}",
+            f"Report the derived decision summary field {field} as {expected!r} after evaluating all three approaches.",
+        )
     change_fields = (
         "id", "system", "object_type", "record_id", "operation", "field", "before", "after",
         "reason", "primary_source", "corroborating_source", "gong_evidence_id", "owner", "deadline",
-        "portfolio_key",
+        "portfolio_key", "value_kind", "decision_method", "decision_inputs",
+        "decision_explanation", "selected_option_id", "evidence_sources",
     )
     for change in spec["expected_changes"]:
         add("changes", f"{change['id']}.present", f"Include an auditable row for {change['id']} ({change['portfolio_key']}).")
@@ -1126,6 +2520,27 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
                 "changes",
                 f"{change['id']}.{field}",
                 f"Ground {change['id']}'s {field} in the released record for {change['record_id']} and its controlling sources.",
+            )
+    add(
+        "changes",
+        "holds_exact_count",
+        f"Report exactly {spec['expected_hold_count']} unresolved portfolio records without mutating them.",
+    )
+    hold_fields = (
+        "id", "portfolio_key", "account_name", "blocking_condition", "primary_source",
+        "corroborating_source", "owner", "deadline", "required_next_step",
+    )
+    for hold in spec["expected_holds"]:
+        add(
+            "changes",
+            f"{hold['id']}.present",
+            f"Identify {hold['portfolio_key']} as held because of {hold['blocking_condition']}.",
+        )
+        for field in hold_fields:
+            add(
+                "changes",
+                f"{hold['id']}.{field}",
+                f"Ground held-case {hold['id']}'s {field} in its exception and corroborating source.",
             )
 
     for section in spec["brief_sections"]:
@@ -1137,10 +2552,21 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
             f"Explain {change['id']} with portfolio key {change['portfolio_key']}, record {change['record_id']}, "
             f"field transition {change['before']!r} to {change['after']!r}, both source paths, owner, and deadline.",
         )
+    add(
+        "brief",
+        "decision_and_alternatives",
+        "Name the selected evidence-backed option, the rejected alternatives, the derivation method, and the actionable/held counts.",
+    )
+    for hold in spec["expected_holds"]:
+        add(
+            "brief",
+            f"hold.{hold['id']}",
+            f"Explain why {hold['portfolio_key']} stayed unchanged, cite both sources, and state its owner, deadline, and next step.",
+        )
     add("brief", "forbidden_claims_absent", "Do not claim that Gong changed, expose private transcript text, invent approval, or report a forbidden bulk action.")
 
-    if len(rows) != 281:
-        raise ValueError(f"expected 281 rubric criteria, got {len(rows)}")
+    if len(rows) < 40:
+        raise ValueError(f"expected at least 40 rubric criteria, got {len(rows)}")
     return rows
 
 
@@ -1150,13 +2576,62 @@ def build_prompt(
     task_number: int,
     documents: dict[str, str],
 ) -> str:
-    family = FAMILY_SETTINGS[spine.family]
-    return (
-        f"{spine.requester} at {spine.company} needs your help before the {spine.period} operating review. "
-        f"{spine.narrative} Work out the defensible {family['label']}, correct only the CRM records the "
-        "current evidence actually supports, and leave an audit-ready change register and a short decision "
-        "brief for the team. Protect unrelated records and private call content; where the sources do not "
-        "agree, keep the record unchanged and explain the hold."
+    frames = (
+        (
+            "Can you get {title} settled for {requester} before the {period} review? {narrative} "
+            "Make the changes the evidence supports, leave uncertain records alone, and send back a short "
+            "account of what changed and what still needs a decision."
+        ),
+        (
+            "{requester} has asked for a clean answer on {title}. {narrative} Please resolve the supported "
+            "records before the {period} review and leave the team enough source detail to understand every "
+            "change and every hold."
+        ),
+        (
+            "We need to finish {title} for {company} this cycle. {narrative} Figure out which records can be "
+            "acted on safely, carry those through, and summarize the unresolved cases for {requester}."
+        ),
+        (
+            "Could you take ownership of {title} for {company}? {narrative} The {period} review needs an honest "
+            "operating picture, so correct only what the current evidence establishes and explain anything "
+            "you deliberately leave untouched."
+        ),
+        (
+            "Before {company}'s {period} review, {requester} needs {title} closed out. {narrative} Please make "
+            "the bounded repairs you can support and leave a concise handoff with the facts behind each call."
+        ),
+        (
+            "The next operating meeting is blocked on {title}. {narrative} Work through the records for "
+            "{company}, fix the cases that are actually supported, and give {requester} a clear list of the "
+            "changes and the exceptions you held."
+        ),
+        (
+            "{company} needs a reliable result for {title}, not another dashboard export. {narrative} Reconcile "
+            "what happened, make only justified corrections, and leave {requester} a practical handoff for "
+            "the {period} review."
+        ),
+        (
+            "Please sort out {title} for {requester}. {narrative} Use the current records to decide what can "
+            "move now, protect anything that remains ambiguous, and document the outcome before the {period} "
+            "team review."
+        ),
+        (
+            "There is a live operating decision behind {title} at {company}. {narrative} Resolve the supported "
+            "cases, keep conflicting ones on hold, and leave a source-backed note that {requester} can use in "
+            "the {period} meeting."
+        ),
+        (
+            "Can you close the loop on {title}? {narrative} {requester} needs the supported corrections in place "
+            "for {company}, plus a brief explanation of the records you changed and the ones you did not."
+        ),
+    )
+    frame = frames[(task_number - 1) % len(frames)]
+    return frame.format(
+        title=spine.title.casefold(),
+        requester=spine.requester,
+        period=spine.period,
+        company=spine.company,
+        narrative=spine.narrative,
     )
 
 
@@ -1167,37 +2642,48 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
     documents, paths_by_key = build_documents(
         spine, task_id, task_number, entities, changes
     )
+    entity_by_key = {entity["portfolio_key"]: entity for entity in entities}
+    action_spec = ACTION_SPECS[spine.slug]
+    salesforce_object = action_spec.salesforce_object
+    hubspot_object = action_spec.hubspot_object
     for change in changes:
         sources = paths_by_key[change["portfolio_key"]]
         change["primary_source"] = sources[0]
         change["corroborating_source"] = sources[1]
-        change["allowed_fact_text"] = " ".join(
-            str(change[key])
-            for key in (
-                "id", "portfolio_key", "record_id", "field", "before", "after",
-                "reason", "owner", "deadline", "gong_evidence_id",
-                "primary_source", "corroborating_source",
-            )
-        )
+        change["evidence_sources"] = list(sources)
+        entity = entity_by_key[change["portfolio_key"]]
+        gong_call = _gong_evidence_call(spine, entity)
+        change["prewrite_evidence"] = {
+            "document_paths": list(sources),
+            "salesforce_object": salesforce_object,
+            "salesforce_record_id": _provider_record_id(
+                entity, "salesforce", salesforce_object
+            ),
+            "hubspot_object": hubspot_object,
+            "hubspot_record_id": _provider_record_id(
+                entity, "hubspot", hubspot_object
+            ),
+            "gong_tool": gong_call["name"],
+            "gong_record_id": str(
+                gong_call["arguments"].get("crmDealId")
+                or gong_call["arguments"].get("crmAccountId")
+                or gong_call["arguments"].get("crmEntityId")
+            ),
+        }
     seed = build_seed(spine, task_number, entities)
     document_paths = [
         str(PurePosixPath("/workspace/documents") / relative)
         for relative in sorted(documents)
     ]
-    first_by_folder = [
-        str(PurePosixPath("/workspace/documents") / relative)
-        for relative in sorted(documents)
-        if relative.split("/", 1)[1].startswith(
-            f"{(list(FAMILY_SETTINGS[spine.family]['folders']).index(relative.split('/', 1)[0]) * 8 + 1):03d}_"
-        )
-    ][:METADATA_CHECK_COUNT]
+    first_by_folder = document_paths[:METADATA_CHECK_COUNT]
     if len(first_by_folder) != METADATA_CHECK_COUNT:
         raise ValueError(f"expected {METADATA_CHECK_COUNT} metadata paths, got {len(first_by_folder)}")
     calls = _reference_calls(
         spine, task_number, entities, changes, document_paths, first_by_folder
     )
+    holds = _build_holds(task_number, entities, changes, paths_by_key)
     changes_payload, brief_text = _reference_outputs(
-        task_id, spine, task_number, changes
+        task_id, spine, task_number, changes, holds
     )
     changes_text = json.dumps(changes_payload, ensure_ascii=False, indent=2) + "\n"
     calls.extend(
@@ -1212,8 +2698,11 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             },
         ]
     )
-    if len(calls) != MINIMUM_TOOL_CALLS:
-        raise ValueError(f"reference call count {len(calls)} != {MINIMUM_TOOL_CALLS}")
+    if not MIN_REFERENCE_TOOL_CALLS <= len(calls) <= MAX_REFERENCE_TOOL_CALLS:
+        raise ValueError(
+            f"reference call count {len(calls)} outside "
+            f"{MIN_REFERENCE_TOOL_CALLS}..{MAX_REFERENCE_TOOL_CALLS}"
+        )
     spec = {
         "schema_version": "salesbench.task.v1",
         "benchmark": "SalesBench-100",
@@ -1233,7 +2722,7 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         "fixed_file_timestamp": FIXED_FILE_TIMESTAMP,
         "required_document_paths": document_paths,
         "metadata_check_paths": first_by_folder,
-        "minimum_tool_calls": MINIMUM_TOOL_CALLS,
+        "reference_tool_calls": len(calls),
         "required_servers": ["filesystem", "salesforce", "hubspot", "gong"],
         "deliverables": list(DELIVERABLES),
         "expected_changes": [
@@ -1242,7 +2731,10 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             for change in changes
         ],
         "expected_change_count": len(changes),
-        "decision_options": _decision_options(spine, task_number),
+        "expected_decision_summary": changes_payload["decision_summary"],
+        "expected_holds": holds,
+        "expected_hold_count": len(holds),
+        "decision_options": _decision_options(spine, task_number, len(changes)),
         "verify_token_sha256": sha256_text(verification_token(task_id)),
         "contract_pins": CONTRACT_PINS,
         "forbidden_claims": [
@@ -1250,13 +2742,15 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             "$99,999,999", "deleted the control records",
         ],
         "brief_sections": [
-            "Executive assessment", "Review method and system coverage",
+            "Executive assessment", "Decision and alternatives",
+            "Review method and system coverage",
             "Authorized changes", "Holds and unresolved conflicts",
             "Control confirmation", "Next operating cadence",
         ],
         "reference_calls": calls,
         "initial_state_sha256": sha256_text(canonical_json(seed)),
     }
+    spec["rubric_narrative"] = rubric_narrative(spec)
     spec["rubric_criteria"] = rubric_criteria(spec)
     prompt = build_prompt(spine, task_id, task_number, documents)
     reference = {

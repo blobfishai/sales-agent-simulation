@@ -59,6 +59,56 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertLessEqual(report["reward"], 0.49)
 
+    def test_correct_writes_followed_by_late_reads_are_rejected(self) -> None:
+        world = self.world("write-first")
+        calls = self.task.reference["calls"]
+        crm_mutations = [
+            call
+            for call in calls
+            if call["server"] in {"salesforce", "hubspot"}
+            and call["name"] in {"updateSobjectRecord", "hubspot_update_object"}
+        ]
+        outputs = [
+            call
+            for call in calls
+            if call["server"] == "filesystem" and call["name"] == "write_file"
+        ]
+        investigation = [
+            call for call in calls if call not in crm_mutations and call not in outputs
+        ]
+        for call in [*crm_mutations, *investigation, *outputs]:
+            result = world.call_tool(call["server"], call["name"], call["arguments"])
+            self.assertFalse(result["isError"])
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["criteria"]["procedure"]["all_required_evidence_precedes_mutation"]
+        )
+        self.assertFalse(
+            report["criteria"]["procedure"]["all_provider_evidence_precedes_mutation"]
+        )
+
+    def test_mutation_acknowledgement_without_postwrite_readback_is_rejected(self) -> None:
+        world = self.world("missing-readback")
+        skipped_change_id = None
+        for call in self.task.reference["calls"]:
+            if skipped_change_id is None and call.get("phase") == "postwrite_readback":
+                skipped_change_id = call["change_id"]
+                continue
+            result = world.call_tool(call["server"], call["name"], call["arguments"])
+            self.assertFalse(result["isError"])
+        self.assertIsNotNone(skipped_change_id)
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["criteria"]["procedure"]["all_mutations_verified_by_readback"]
+        )
+        self.assertFalse(
+            report["criteria"]["state"]["criteria"][
+                f"{skipped_change_id}.postwrite_readback"
+            ]
+        )
+
     def test_pristine_noop_world_scores_exactly_zero(self) -> None:
         world = self.world("noop")
         report = world.verify(verification_token(self.task.task_id))

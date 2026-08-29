@@ -28,6 +28,11 @@ else:
 from salesbench.contracts import CONTRACT_PINS, TOOLS_BY_SERVER  # noqa: E402
 from salesbench.runtime.world import SalesWorld  # noqa: E402
 
+try:  # The public runtime bundle intentionally omits the generator package.
+    from salesbench.generation import RELEASE_VERSION  # noqa: E402
+except ImportError:  # pragma: no cover - exercised from the packaged HF world
+    RELEASE_VERSION = "3.0.0"
+
 
 def tls_context() -> ssl.SSLContext:
     candidates = (
@@ -257,7 +262,7 @@ def filesystem_conformance() -> dict[str, Any]:
                     "as_of": "2026-08-26",
                     "fixed_file_timestamp": "2026-08-26T12:00:00.000Z",
                     "verify_token_sha256": "unused",
-                    "minimum_tool_calls": 0,
+                    "reference_tool_calls": 0,
                     "required_document_paths": [],
                     "metadata_check_paths": [],
                     "deliverables": [],
@@ -362,6 +367,7 @@ def run(report_path: Path | None = None) -> dict[str, Any]:
     probes_passed = all(probe["auth_gate_present"] for probe in probes.values())
     result = {
         "schema_version": "salesbench.conformance.v1",
+        "benchmark_version": RELEASE_VERSION,
         "filesystem_live_package": filesystem,
         "vendor_source_contracts": sources,
         "hosted_endpoint_probes": probes,

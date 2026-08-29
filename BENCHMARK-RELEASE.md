@@ -1,152 +1,144 @@
-# SalesBench-100 v1.0.1 — Release Qualification
+# SalesBench-100 v3.0.0 — Release Qualification
 
-SalesBench-100 is a deterministic, long-horizon sales-agent benchmark with
-100 original revenue-operations tasks across Salesforce, HubSpot, Gong, and a
-seeded filesystem evidence room. Task IDs are `sb100-NNN-<slug>` and Harbor
-task names are `blobfishai/sb100-NNN-<slug>`.
+SalesBench-100 v3 is a deterministic long-horizon sales-operations benchmark
+with 100 synthetic employee requests across Salesforce, HubSpot, Gong, and a
+seeded evidence room. Task IDs are `sb100-NNN-<slug>` and Harbor task names are
+`blobfishai/sb100-NNN-<slug>`.
 
-## Public release
+## Release status
+
+The source and locally generated v3 candidate pass the complete qualification
+suite. Public v3 publication is recorded only after the merged source is built,
+uploaded, and downloaded again. Until that happens, these links may still show
+the prior public release:
 
 - Source: <https://github.com/blobfishai/sales-agent-simulation>
 - Harbor dataset: <https://hub.harborframework.com/datasets/blobfishai/salesbench-100>
 - Hugging Face dataset: <https://huggingface.co/datasets/SamuelChien821/salesbench-100>
 - Interactive benchmark: <https://blobfish.ai/benchmarks/salesbench-100>
 
-Harbor release `v1.0.1` is dataset revision 2 (`0e615947326d`), with 100
-task artifacts at revision 2 and both `v1.0.1` and `latest` tags. A fresh
-explicit public download returned all 100 tasks. The representative downloaded
-task was rebuilt from scratch and passed with reward `1.000`.
+## What v3 changes
 
-The public Hugging Face repository is ungated and contains 9,833 files at
-commit `9d7265669109307c861ac994644e2cd26d9f152c`. A fresh Hub download of the
-dataset card, qualification and model reports, representative task, and
-163-event trajectory parsed successfully; the task and trajectory matched the
-local release byte-for-byte.
+Earlier releases exposed complete machine-readable decisions and reused one
+semantic procedure. v3 replaces that shortcut with 100 authored causal rules
+and 100 task-specific CRM transitions.
+
+Each task starts with a high-level employee request. For every one of 16
+portfolio records, the agent must correlate six independently mounted evidence
+roles:
+
+1. identity crosswalk,
+2. operating observation,
+3. controlling authority,
+4. governed transition,
+5. live-system corroboration, and
+6. exception record.
+
+The 12 assets in each task are multi-row source exports, not 96 tiny pseudo-files.
+They use text-native Markdown, CSV, JSON, EML, HTML, XML, and text formats and
+range from 5,467 to 39,650 bytes. The release does not rename text as PDF or
+XLSX and makes no binary-document claim.
+
+No mounted business file identifies the selected option or contains a complete
+record/field/value/approval transition. Calculated amounts are absent from the
+evidence room. The agent must derive them from inputs split across observations,
+authority, policy, identity, provider state, and exception evidence.
+
+Supported work varies from 5 to 12 changes per task. The remaining portfolio
+records must be reported as exact held cases with their blocking condition,
+sources, owner, deadline, and next step. The verifier rejects an answer-only
+shortcut, a state-only shortcut, a correct write before investigation, and a
+successful mutation acknowledgement that is never read back.
 
 ## Release contents
 
-- `salesbench/catalog.py`: 100 hand-authored business spines, balanced across
-  10 workflow families.
-- `salesbench/generation.py`: 96 realistic seeded documents per task, 16
-  portfolio entities, 48 distractor records, 12 authorized changes, four
-  protected control records, a 163-call reference trajectory, and deterministic
-  gold deliverables.
+- `salesbench/catalog.py`: 100 hand-authored employee scenarios across 10
+  workflow families.
+- `salesbench/action_specs.py`: 100 explicit provider object/field transitions.
+- `salesbench/decision_specs.py`: 100 distinct causal observation, authority,
+  and derivation rules.
+- `salesbench/generation.py`: deterministic portfolio data, split evidence,
+  natural requests, decision alternatives, exact holds, and reference outputs.
 - `salesbench/runtime/world.py`: 35 tools on four vendor-separated MCP surfaces
-  (filesystem 6, Salesforce 11, HubSpot 15, Gong 3).
-- `salesbench/runtime/scoring.py`: pure deterministic scoring over procedure,
-  exact final state, change ledger, executive brief, and collateral safety.
-  It makes no model, network, random, or wall-clock calls.
-- `salesbench/runtime/server.py`: streamable-HTTP MCP endpoints at
-  `/mcp/{filesystem,salesforce,hubspot,gong}`, plus `/health` and a verifier-only,
-  capability-token-protected `/verify` endpoint. There is no solve endpoint.
-- `salesbench/builder.py`: Harbor 1.4 task packs and dataset manifest, plus a
-  Hugging Face release with task JSON/JSONL, seeded documents, world source,
-  exact oracle trajectories, licenses, and evidence reports.
-- `salesbench/run_suite.py`: two complete replays and six adversarial negative
-  controls for every task, producing 800 deterministic executions.
+  with causal trace verification and capability-protected scoring.
+- `salesbench/runtime/scoring.py`: exact state, decision, held-case, readback,
+  collateral-safety, and human-handoff scoring.
+- `salesbench/builder.py`: Harbor 1.4 packs, Hugging Face output, and
+  release-blocking leakage, diversity, partition, and trajectory audits.
+- `salesbench/run_suite.py`: oracle, deterministic replay, and ten adversarial
+  controls for every task.
 
-The Harbor v1.0.1 images bake the seeded documents into both containers and
-make the world copy read-only. That design is required for registry portability;
-it replaces the task-relative bind mount used by the superseded v1.0.0 pack.
-
-## Executed qualification
+## Executed v3 qualification
 
 | Check | Result |
-|---|---|
-| In-process oracle | 100/100 passed, reward 1.0 |
-| Exact deterministic replay | 100/100 reports matched |
-| Six negative controls | 600/600 correctly rejected; 0 false accepts |
-| Pristine no-op | exactly 0.0 on 100/100 tasks |
-| Total qualification executions | 800 |
-| Local unit tests | 15/15 passed |
-| Prompt skeletons | 100/100 unique |
-| Maximum pairwise prompt similarity | 0.762931 five-shingle Jaccard |
-| Seeded documents | 9,600 total; 9,600 unique SHA-256 digests |
-| Document depth | 5,252–6,692 bytes; 5,453-byte median |
-| Reference trajectory | 163 successful calls per task; 16,300 total |
-| Deterministic verifier criteria | 281 per task |
-| Initial full Harbor run | 59 pass, 38 infrastructure exceptions, 3 contention nonpasses |
-| Isolated Harbor recovery | all 41 initial nonpasses passed; combined 100/100 |
-| Local forced-build packaging smoke | reward 1.0 |
-| Fresh public v1.0.1 Harbor download | 100/100 artifacts downloaded |
-| Public forced-build representative run | reward 1.0; 0 infrastructure errors |
+|---|---:|
+| Oracle trajectories | 100/100 passed |
+| Exact deterministic replays | 100/100 reports matched |
+| Ten negative controls | 1,000/1,000 correctly rejected |
+| Total qualification executions | 1,200 |
+| Unit tests | 28 tests plus 35 subtests passed |
+| Workflow families | 10, with 10 tasks each |
+| Prompt duplicates | 0 |
+| Maximum prompt similarity | 0.272727 five-shingle Jaccard |
+| Multi-record evidence assets | 1,200 total; 1,200 unique SHA-256 digests |
+| Evidence bytes | 20,266,114 total; 14,255-byte median |
+| Precomputed answer findings | 0 |
+| Single-file complete-transition findings | 0 |
+| Selected-option leaks | 0 |
+| Calculated-amount leaks | 0 |
+| Authored causal rule signatures | 100/100 unique |
+| Ordered tool-name sequences | 100/100 unique |
+| Semantic action graphs | 100/100 unique |
+| Maximum semantic sequence match | 0.885246 |
+| Reference trajectory | 56–91 calls; 7,205 total |
+| Deterministic verifier criteria | 301–420 per task |
+| Missing-readback false accepts | 0/100 |
+| No-op nonzero rewards | 0/100 |
 
-The initial 100-task concurrent Harbor run deliberately remains in the
-evidence. Its 38 exceptions (`RewardFileNotFoundError`, `RuntimeError`, and
-`FileNotFoundError`) and three scored nonpasses were runner resource/contention
-failures. Every affected task passed in a fresh isolated Harbor job. This is
-reported as real infrastructure failure evidence, not hidden or relabeled as a
-task failure.
+The ten adversarial controls are answer-only, state-only, incomplete evidence,
+write-before-read, missing readback, unauthorized write, unauthorized delete,
+wrong derived value, wrong decision option, and pristine no-op. Each control is
+executed independently for all 100 tasks.
 
-The first public v1.0.0 artifact also remains recorded: it scored `0.165156`
-because registry-built containers could not resolve a task-relative document
-bind mount. v1.0.1 removed that mount, baked the data into the images, and then
-passed both a forced local build and a forced build from a fresh public download.
+Machine-readable evidence is generated at:
 
-Evidence:
+- `dist/salesbench-100/reports/build.json`
+- `dist/salesbench-100/reports/qualification.json`
 
-- `reports/conformance.json`
-- `reports/harbor-oracle-qualification.json`
-- `reports/harbor-registry-qualification.json`
-- `reports/model-evaluation.json`
-- generated `reports/build.json` and `reports/qualification.json`
+## Real-model results
 
-## Real-model evaluation
-
-One authenticated Harbor run used Codex agent `0.150.0`, `gpt-5.6-sol`, and
-maximum reasoning on `sb100-001-northwind-q3-commit`:
-
-| Signal | Result |
-|---|---|
-| Successful calls | 219 (175 unique) |
-| Evidence read | 96/96 documents |
-| Procedure / state | 100% / 100% |
-| Change ledger / brief | 94% / 36.8421% |
-| Weighted score | 92.1842% |
-| Strict pass | false |
-| Cost / duration | $1.7056176 / 569.66 seconds |
-
-The model made every authorized CRM mutation and preserved all protected state,
-but selected policy/control records instead of the required source-of-truth
-records for all 12 change citations. The deterministic verifier rejected those
-12 ledger criteria and the 12 corresponding brief criteria. This is an actual
-model failure, not an infrastructure exception. The benchmark page labels the
-result as one-task coverage; it is not represented as a 100-task model score.
-
-An earlier adapter attempt received HTTP 401 before task work because an empty
-`OPENAI_API_KEY` was supplied. It is retained in `model-evaluation.json` as an
-unscored harness-configuration failure.
+No v3 model score is claimed. Historical runs from prior releases are not
+comparable and must not appear as v3 leaderboard rows. A row may be published
+only after the model is run against the exact v3 artifact with coverage, harness,
+and artifact-digest provenance.
 
 ## Reproduce
 
 ```bash
 git clone https://github.com/blobfishai/sales-agent-simulation.git
 cd sales-agent-simulation
-python3 -m unittest discover -s tests -v
-python3 -m salesbench.builder
-python3 -m salesbench.run_suite
-harbor run -d blobfishai/salesbench-100@v1.0.1 -a oracle -n 1
+uv run --python 3.12 --with pytest python -m pytest -q
+uv run --python 3.12 python -m salesbench.builder
+uv run --python 3.12 python -m salesbench.run_suite
 ```
 
-The final command exercises the public Harbor release. Each verifier writes
-`report.json`, `reward.json`, and `reward.txt` under Harbor's verifier log
-directory.
+After v3 is published, the exact Harbor artifact can be exercised with:
+
+```bash
+harbor run -d blobfishai/salesbench-100@v3.0.0 -a oracle -n 1
+```
 
 ## Contract fidelity and limits
 
 Tool names and request schemas are pinned to immutable real implementations or
-official API specifications; see `research/API-CONTRACTS.md`. The conformance
-run checked all six filesystem contracts and behavior, matched vendor source
-fragments at their recorded commits, and confirmed that the official Salesforce,
-HubSpot, and Gong hosted endpoints returned authentication gates.
+official API specifications; see `research/API-CONTRACTS.md`. Salesforce,
+HubSpot, Gong, and filesystem remain separate MCP endpoints. Gong is read-only.
 
 The release does not claim an authenticated hosted `tools/list` comparison:
-`authenticated_hosted_tools_list_compared` is explicitly `false`. Offline
-response envelopes mirror the documented surfaces but are not byte-for-byte
-copies of tenant-hosted responses. Gong remains strictly read-only.
+`authenticated_hosted_tools_list_compared` remains `false`. Offline response
+envelopes mirror documented shapes but are not byte-for-byte tenant responses.
+All benchmark people, companies, records, and commercial facts are synthetic.
 
-All 100 reference trajectories use the same auditable macro-procedure—orient,
-read 96 evidence documents, inspect metadata and schemas, reconcile 12 changes,
-then write two deliverables. Task content, companies, conflicts, authorized
-mutations, source records, and prompts are hand-authored per spine; exact
-documents and prompt skeletons have no duplicates.
+Public gold, verifier metadata, and oracle traces are inspection artifacts; they
+are never mounted into the agent-visible task workspace. Open-book scores must
+be labeled separately from sealed leaderboard evaluations.
