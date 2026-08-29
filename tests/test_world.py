@@ -18,7 +18,10 @@ class WorldTests(unittest.TestCase):
         for relative, content in self.task.documents.items():
             path = self.documents / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            if isinstance(content, bytes):
+                path.write_bytes(content)
+            else:
+                path.write_text(content, encoding="utf-8")
         self.spec_path = self.root / "spec.json"
         self.seed_path = self.root / "seed.json"
         self.spec_path.write_text(json.dumps(self.task.spec), encoding="utf-8")

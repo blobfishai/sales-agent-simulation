@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import stat
+import zipfile
 from collections import Counter
 from difflib import SequenceMatcher
 from email import policy
@@ -33,6 +34,7 @@ from .generation import (
     METADATA_CHECK_COUNT,
     MIN_REFERENCE_TOOL_CALLS,
     MIN_TARGET_CHANGE_COUNT,
+    REQUIRED_TEXT_DOCUMENT_COUNT,
     RELEASE_VERSION,
     GeneratedTask,
     generate_all,
@@ -66,6 +68,14 @@ def write_json(path: Path, value: Any) -> None:
     write_text(path, json.dumps(value, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
 
 
+def write_asset(path: Path, value: str | bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(value, bytes):
+        path.write_bytes(value)
+    else:
+        path.write_text(value, encoding="utf-8", newline="\n")
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -74,11 +84,54 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _asset_format_error(relative: str, content: str) -> str | None:
-    """Parse each text-native export according to its declared extension."""
+def _asset_format_error(relative: str, content: str | bytes) -> str | None:
+    """Parse each released export according to its native extension."""
 
     suffix = Path(relative).suffix.casefold()
+    folder = relative.split("/", 1)[0]
+    supplemental = folder[:2].isdigit() and int(folder[:2]) >= 13
     try:
+        if suffix == ".pdf":
+            if not isinstance(content, bytes) or not content.startswith(b"%PDF-1.4"):
+                return "PDF magic is invalid"
+            if not content.rstrip().endswith(b"%%EOF") or b"xref\n" not in content:
+                return "PDF cross-reference or trailer is invalid"
+            return None
+        if suffix == ".xlsx":
+            if not isinstance(content, bytes):
+                return "XLSX asset is not binary"
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                names = set(archive.namelist())
+                if not {"[Content_Types].xml", "xl/workbook.xml", "xl/worksheets/sheet1.xml"} <= names:
+                    return "XLSX package is missing required workbook parts"
+                ElementTree.fromstring(archive.read("xl/workbook.xml"))
+                ElementTree.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+            return None
+        if not isinstance(content, str):
+            return f"{suffix} asset must be UTF-8 text"
+        if supplemental:
+            if len(content.encode("utf-8")) < 800:
+                return "supplemental evidence must contain at least 800 bytes"
+            if suffix == ".json":
+                value = json.loads(content)
+                if not isinstance(value, dict) or not value.get("case_id"):
+                    return "supplemental JSON is missing its case identity"
+            elif suffix == ".csv":
+                rows = list(csv.DictReader(io.StringIO(content)))
+                if len(rows) < 8 or not all(row.get("case_id") for row in rows):
+                    return "supplemental CSV lacks case-linked rows"
+            elif suffix == ".eml":
+                message = Parser(policy=policy.default).parsestr(content)
+                if not message.get("From") or not message.get("To") or not message.get("Subject"):
+                    return "supplemental EML envelope headers are incomplete"
+                if len(message.get_content()) < 500:
+                    return "supplemental EML body is too shallow"
+            elif suffix in {".md", ".log", ".yaml"}:
+                if "case" not in content.casefold() or "\x00" in content:
+                    return "supplemental evidence lacks case context or contains NUL bytes"
+            else:
+                return f"unsupported supplemental extension {suffix}"
+            return None
         if suffix == ".json":
             value = json.loads(content)
             if not isinstance(value, dict) or len(value.get("records", [])) != 8:
@@ -121,7 +174,15 @@ def _asset_format_error(relative: str, content: str) -> str | None:
                 return "text register must contain eight portfolio records and no NUL bytes"
         else:
             return f"unsupported text-native extension {suffix}"
-    except (csv.Error, json.JSONDecodeError, KeyError, TypeError, ValueError, ElementTree.ParseError) as exc:
+    except (
+        csv.Error,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+        ElementTree.ParseError,
+        zipfile.BadZipFile,
+    ) as exc:
         return f"{type(exc).__name__}: {exc}"
     return None
 
@@ -370,7 +431,7 @@ def create_task_pack(
     hf_context_paths: list[str] = []
     for relative, content in sorted(task.documents.items()):
         source = documents / relative
-        write_text(source, content)
+        write_asset(source, content)
         timestamp = 1_788_777_600  # 2026-08-26 12:00:00 UTC, fixed.
         os.utime(source, (timestamp, timestamp))
         target = hf_root / "task_files" / task.task_id / relative
@@ -395,7 +456,7 @@ def create_task_pack(
         "context_files": hf_context_paths,
         "rubric": {
             "type": "deterministic",
-            "required_document_reads": DOCUMENT_COUNT,
+            "required_document_reads": REQUIRED_TEXT_DOCUMENT_COUNT,
             "metadata_checks": METADATA_CHECK_COUNT,
             "authorized_mutations": len(task.spec["expected_changes"]),
             "required_deliverables": ["changes.json", "brief.md"],
@@ -649,7 +710,7 @@ configs:
 
 # {RELEASE_NAME}
 
-{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 12 multi-row source assets. The evidence—not a fixed quota—determines 5–12 authorized CRM mutations and 56–91 calls, including an exact post-write readback for every mutation.
+{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 28 independently inspectable assets across 11 native formats. The evidence—not a fixed quota—determines 5–12 authorized CRM mutations and 68–103 calls, including an exact post-write readback for every mutation.
 
 ## Public release
 
@@ -662,7 +723,7 @@ configs:
 
 - `data/tasks.jsonl`: portable task records with prompts, context paths, deterministic rubric metadata, and public gold output.
 - `tasks/`: one readable JSON record per workflow.
-- `task_files/`: 1,200 unique multi-record assets across Markdown, text, JSON, CSV, email, XML, and HTML.
+- `task_files/`: 2,800 unique task-scoped assets across PDF, Excel, email, Slack/Drive-style JSON, structured exports, controls, and audit records.
 - `world/`: the four-surface offline MCP world and verifier.
 - `contracts/`: pinned contract metadata and exact published tool schemas.
 - `trajectories/`: accepted tool traces produced by the qualification run.
@@ -674,9 +735,9 @@ configs:
 |---|---:|
 | Tasks | 100 |
 | Workflow families | 10 |
-| Multi-record assets per task | 12 |
+| Agent-visible assets per task | 28 across 11 native formats |
 | Authorized mutations per task | 5–12; at least six distinct workload sizes |
-| Reference MCP calls per task | 56–91 |
+| Reference MCP calls per task | 68–103 |
 | Unique tool-name sequences | 100/100 |
 | Unique semantic action graphs | 100/100 |
 | Authored causal decision rules | 100/100 unique |
@@ -737,8 +798,8 @@ def _validate_report(report: dict[str, Any]) -> None:
     failures = {
         "task_count": report["task_count"] == 100,
         "family_distribution": report["tasks_per_workflow_family"] == expected_families,
-        "document_count": report["document_count"] == 1_200,
-        "all_documents_unique": report["unique_document_sha256_count"] == 1_200,
+        "document_count": report["document_count"] == 2_800,
+        "all_documents_unique": report["unique_document_sha256_count"] == 2_800,
         "minimum_document_bytes": report["minimum_document_bytes"] >= 800,
         "reference_call_range": (
             report["reference_tool_calls_per_task"]["minimum"] >= MIN_REFERENCE_TOOL_CALLS
@@ -948,7 +1009,7 @@ def build(output: Path) -> dict[str, Any]:
             matching_documents = [
                 content
                 for content in task.documents.values()
-                if portfolio_key in content
+                if isinstance(content, str) and portfolio_key in content
             ]
             if len(matching_documents) != len(EVIDENCE_ROLES):
                 evidence_role_coverage = False
@@ -964,8 +1025,11 @@ def build(output: Path) -> dict[str, Any]:
                 invalid_assets.append(
                     {"task_id": task.task_id, "path": relative, "error": error}
                 )
-            document_hashes.add(hashlib.sha256(content.encode("utf-8")).hexdigest())
-            document_sizes.append(len(content.encode("utf-8")))
+            blob = content if isinstance(content, bytes) else content.encode("utf-8")
+            document_hashes.add(hashlib.sha256(blob).hexdigest())
+            document_sizes.append(len(blob))
+            if isinstance(content, bytes):
+                continue
             for forbidden in forbidden_answer_keys:
                 if forbidden in content:
                     precomputed_answer_hits.append(
@@ -1070,7 +1134,7 @@ def build(output: Path) -> dict[str, Any]:
         "exact_duplicate_prompts": len(prompts) - len(set(prompts)),
         "exact_duplicate_documents": len(document_sizes) - len(document_hashes),
         "asset_format_validation": {
-            "scope": "text-native exports only; no PDF/XLSX claim",
+            "scope": "native PDF/XLSX packages plus validated UTF-8 communication, control, and structured-export formats",
             "format_counts": dict(sorted(asset_format_counts.items())),
             "invalid_assets": invalid_assets,
         },

@@ -10,15 +10,17 @@ The release target is deliberately strict:
 - 100 distinct B2B sales and revenue-operations tasks across 10 workflow families.
 - 100 authored causal decision rules, each with task-specific observations,
   controlling authority, alternatives, and provider state transitions.
-- 12 task-specific multi-record assets per task (1,200 unique assets total).
-  Every portfolio key must be joined across identity, operating facts, authority,
-  governed transitions, live-system indexes, and exceptions; no business file
-  publishes a precomputed answer.
+- 28 task-specific assets per task (2,800 unique assets total), including 12
+  multi-record business exports plus current and superseded PDF controls, real
+  XLSX workbooks, email, Slack/Drive-style records, lineage tables, and audit
+  evidence. Every portfolio key must be joined across identity, operating facts,
+  authority, governed transitions, live-system indexes, and exceptions; no
+  business file publishes a precomputed answer.
 - Vendor-separated MCP servers whose schemas and response envelopes are pinned to real implementations or official API specifications.
 - Deterministic, criterion-level verification of evidence-before-write causality,
   calculation or branch choice, exact CRM state, collateral safety, per-write
   readback, held cases, and human deliverables.
-- 56–91 successful MCP calls per accepted trajectory, with 5–12 evidence-derived
+- 68–103 successful MCP calls per accepted trajectory, with 5–12 evidence-derived
   mutations and an exact readback after each mutation.
 - 1,200 local qualification executions: oracle, exact replay, and ten adversarial
   controls for every task. Model scores remain withheld until an exact-version run exists.

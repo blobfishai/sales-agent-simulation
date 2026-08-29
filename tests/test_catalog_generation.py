@@ -203,7 +203,10 @@ class CatalogGenerationTests(unittest.TestCase):
         for task in self.tasks:
             options = task.spec["decision_options"]
             option_ids.extend(option["id"] for option in options)
-            self.assertNotIn('"selected":', "\n".join(task.documents.values()))
+            text_documents = [
+                content for content in task.documents.values() if isinstance(content, str)
+            ]
+            self.assertNotIn('"selected":', "\n".join(text_documents))
             changed = {
                 change["portfolio_key"] for change in task.spec["expected_changes"]
             }
@@ -232,7 +235,9 @@ class CatalogGenerationTests(unittest.TestCase):
 
     def test_operating_histories_are_bounded_and_amount_answers_are_not_seeded(self) -> None:
         for task in self.tasks:
-            combined = "\n".join(task.documents.values())
+            combined = "\n".join(
+                content for content in task.documents.values() if isinstance(content, str)
+            )
             events = re.findall(r"EVT-\d{3}-\d{3}-\d+", combined)
             self.assertGreaterEqual(len(events), 16 * 5)
             self.assertLessEqual(len(events), 16 * 6)
@@ -261,11 +266,14 @@ class CatalogGenerationTests(unittest.TestCase):
             '"required_value"',
         )
         for task in self.tasks:
-            combined = "\n".join(task.documents.values())
+            text_documents = [
+                content for content in task.documents.values() if isinstance(content, str)
+            ]
+            combined = "\n".join(text_documents)
             for forbidden in forbidden_keys:
                 self.assertNotIn(forbidden, combined, (task.task_id, forbidden))
             for change in task.spec["expected_changes"]:
-                for content in task.documents.values():
+                for content in text_documents:
                     leaked_complete_transition = all(
                         str(value) in content
                         for value in (
@@ -287,7 +295,7 @@ class CatalogGenerationTests(unittest.TestCase):
                 records = [
                     content
                     for content in task.documents.values()
-                    if portfolio_key in content
+                    if isinstance(content, str) and portfolio_key in content
                 ]
                 self.assertEqual(len(records), len(EVIDENCE_ROLES))
                 for role in EVIDENCE_ROLES:
@@ -308,14 +316,21 @@ class CatalogGenerationTests(unittest.TestCase):
 
     def test_seeded_documents_are_deep_and_globally_unique(self) -> None:
         contents = [content for task in self.tasks for content in task.documents.values()]
-        self.assertEqual(len(contents), 1_200)
-        # Depth comes from independently necessary roles, not padding every
-        # file to an arbitrary byte floor.
-        self.assertGreaterEqual(min(len(content.encode("utf-8")) for content in contents), 800)
+        self.assertEqual(len(contents), 2_800)
+        blobs = [
+            content if isinstance(content, bytes) else content.encode("utf-8")
+            for content in contents
+        ]
+        self.assertGreaterEqual(min(len(content) for content in blobs), 800)
         self.assertEqual(
-            len({hashlib.sha256(content.encode("utf-8")).digest() for content in contents}),
-            1_200,
+            len({hashlib.sha256(content).digest() for content in blobs}),
+            2_800,
         )
+        for task in self.tasks:
+            suffixes = {Path(relative).suffix for relative in task.documents}
+            self.assertGreaterEqual(len(suffixes), 9)
+            self.assertIn(".pdf", suffixes)
+            self.assertIn(".xlsx", suffixes)
 
     def test_seeded_documents_are_baked_into_public_harbor_images(self) -> None:
         compose = compose_yaml()

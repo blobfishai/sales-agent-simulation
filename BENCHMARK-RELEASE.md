@@ -1,6 +1,6 @@
-# SalesBench-100 v3.0.0 — Release Qualification
+# SalesBench-100 v3.1.0 — Release Qualification
 
-SalesBench-100 v3 is a deterministic long-horizon sales-operations benchmark
+SalesBench-100 v3.1 is a deterministic long-horizon sales-operations benchmark
 with 100 synthetic employee requests across Salesforce, HubSpot, Gong, and a
 seeded evidence room. Task IDs are `sb100-NNN-<slug>` and Harbor task names are
 `blobfishai/sb100-NNN-<slug>`.
@@ -17,7 +17,7 @@ the prior public release:
 - Hugging Face dataset: <https://huggingface.co/datasets/SamuelChien821/salesbench-100>
 - Interactive benchmark: <https://blobfish.ai/benchmarks/salesbench-100>
 
-## What v3 changes
+## What v3.1 changes
 
 Earlier releases exposed complete machine-readable decisions and reused one
 semantic procedure. v3 replaces that shortcut with 100 authored causal rules
@@ -34,10 +34,12 @@ roles:
 5. live-system corroboration, and
 6. exception record.
 
-The 12 assets in each task are multi-row source exports, not 96 tiny pseudo-files.
-They use text-native Markdown, CSV, JSON, EML, HTML, XML, and text formats and
-range from 5,467 to 39,650 bytes. The release does not rename text as PDF or
-XLSX and makes no binary-document claim.
+Each task has 28 assets: 12 multi-row business exports plus 16 independently
+inspectable control, workbook, collaboration, approval, communication, lineage,
+and audit artifacts. The room mixes current and superseded evidence across 11
+native formats, including generated PDF files with valid cross-reference tables
+and real XLSX packages with parseable workbook XML. Assets range from 838 to
+39,650 bytes; text is never renamed to impersonate a binary format.
 
 No mounted business file identifies the selected option or contains a complete
 record/field/value/approval transition. Calculated amounts are absent from the
@@ -80,8 +82,9 @@ successful mutation acknowledgement that is never read back.
 | Workflow families | 10, with 10 tasks each |
 | Prompt duplicates | 0 |
 | Maximum prompt similarity | 0.272727 five-shingle Jaccard |
-| Multi-record evidence assets | 1,200 total; 1,200 unique SHA-256 digests |
-| Evidence bytes | 20,266,114 total; 14,255-byte median |
+| Agent-visible evidence assets | 2,800 total; 2,800 unique SHA-256 digests |
+| Evidence bytes | 23,949,698 total; 3,722-byte median |
+| Native formats | 11; PDF and XLSX structures parse successfully |
 | Precomputed answer findings | 0 |
 | Single-file complete-transition findings | 0 |
 | Selected-option leaks | 0 |
@@ -89,8 +92,8 @@ successful mutation acknowledgement that is never read back.
 | Authored causal rule signatures | 100/100 unique |
 | Ordered tool-name sequences | 100/100 unique |
 | Semantic action graphs | 100/100 unique |
-| Maximum semantic sequence match | 0.885246 |
-| Reference trajectory | 56–91 calls; 7,205 total |
+| Maximum semantic sequence match | 0.904110 |
+| Reference trajectory | 68–103 calls; 8,405 total |
 | Deterministic verifier criteria | 301–420 per task |
 | Missing-readback false accepts | 0/100 |
 | No-op nonzero rewards | 0/100 |
@@ -125,7 +128,7 @@ uv run --python 3.12 python -m salesbench.run_suite
 After v3 is published, the exact Harbor artifact can be exercised with:
 
 ```bash
-harbor run -d blobfishai/salesbench-100@v3.0.0 -a oracle -n 1
+harbor run -d blobfishai/salesbench-100@v3.1.0 -a oracle -n 1
 ```
 
 ## Contract fidelity and limits
