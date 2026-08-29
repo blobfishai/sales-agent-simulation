@@ -8,11 +8,20 @@ room. It is the sales-domain counterpart to
 The release target is deliberately strict:
 
 - 100 distinct B2B sales and revenue-operations tasks across 10 workflow families.
-- At least 100 successful MCP interactions in every accepted reference trajectory.
-- 96 task-specific seeded artifacts per task, with linked records and planted conflicts.
+- 100 authored causal decision rules, each with task-specific observations,
+  controlling authority, alternatives, and provider state transitions.
+- 12 task-specific multi-record assets per task (1,200 unique assets total).
+  Every portfolio key must be joined across identity, operating facts, authority,
+  governed transitions, live-system indexes, and exceptions; no business file
+  publishes a precomputed answer.
 - Vendor-separated MCP servers whose schemas and response envelopes are pinned to real implementations or official API specifications.
-- Deterministic, criterion-level verification of procedure, CRM state, collateral safety, and deliverables.
-- Oracle, negative-control, exact-replay, container, and real-model execution evidence.
+- Deterministic, criterion-level verification of evidence-before-write causality,
+  calculation or branch choice, exact CRM state, collateral safety, per-write
+  readback, held cases, and human deliverables.
+- 56–91 successful MCP calls per accepted trajectory, with 5–12 evidence-derived
+  mutations and an exact readback after each mutation.
+- 1,200 local qualification executions: oracle, exact replay, and ten adversarial
+  controls for every task. Model scores remain withheld until an exact-version run exists.
 - Public GitHub, Harbor, Hugging Face, and Blobfish benchmark-page releases.
 
 ## Why a new repository
@@ -23,8 +32,8 @@ has 339 tables, 597 tools, 66 tasks and verifiers, eleven vendor endpoints,
 deterministic VCode grading, and hundreds of frontier-run traces. SalesBench-100
 reuses its strongest methods—vendor isolation, immutable provenance, exact
 state diffs, collateral-damage checks, and inspectable trajectories—but focuses
-the release on 100 hand-authored Salesforce + HubSpot + Gong workflows with a
-uniform 96-document, 163-call evaluation contract. The two repositories are
+the release on 100 hand-authored Salesforce + HubSpot + Gong workflows with
+100 distinct semantic action graphs. The two repositories are
 complementary: one explores breadth and model frontiers; this one is the compact,
 portable public benchmark and dataset.
 

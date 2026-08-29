@@ -765,32 +765,121 @@ class SalesWorld:
             match
             for entry in successful
             if entry.get("server") == "salesforce" and entry.get("tool") == "soqlQuery"
-            for match in re.findall(r"006SB\w+", str(entry.get("arguments", {}).get("query", "")))
+            for match in re.findall(
+                r"(?:001|006|003|00Q|0Q0|00v|00T)SB[A-Za-z0-9]+",
+                str(entry.get("arguments", {}).get("query", "")),
+            )
         }
-        hs_deal_ids = {
+        hs_object_ids = {
             str(entry.get("arguments", {}).get("object_id"))
             for entry in successful
             if entry.get("server") == "hubspot"
             and entry.get("tool") == "hubspot_get_object"
-            and entry.get("arguments", {}).get("object_type") == "deals"
         }
-        gong_deal_ids = {
-            str(entry.get("arguments", {}).get("crmDealId"))
+        def gong_record_id(entry: dict[str, Any]) -> str:
+            arguments = entry.get("arguments", {})
+            return str(
+                arguments.get("crmDealId")
+                or arguments.get("crmAccountId")
+                or arguments.get("crmEntityId")
+                or ""
+            )
+
+        gong_record_ids = {
+            gong_record_id(entry)
             for entry in successful
-            if entry.get("server") == "gong" and entry.get("tool") == "ask_deal"
-        }
-        required_gong_ids = {
-            str(call["arguments"]["crmDealId"])
-            for call in self.spec["reference_calls"]
-            if call["server"] == "gong" and call["name"] == "ask_deal"
-        }
+            if entry.get("server") == "gong"
+            and entry.get("tool") in {"ask_deal", "ask_account", "generate_brief"}
+        } - {""}
+        required_salesforce_ids = {
+            str(change.get("prewrite_evidence", {}).get("salesforce_record_id") or "")
+            for change in self.spec["expected_changes"]
+        } - {""}
         required_hs_ids = {
-            str(call["arguments"]["object_id"])
-            for call in self.spec["reference_calls"]
-            if call["server"] == "hubspot" and call["name"] == "hubspot_get_object"
-        }
+            str(change.get("prewrite_evidence", {}).get("hubspot_record_id") or "")
+            for change in self.spec["expected_changes"]
+        } - {""}
+        required_gong_ids = {
+            str(change.get("prewrite_evidence", {}).get("gong_record_id") or "")
+            for change in self.spec["expected_changes"]
+        } - {""}
+
+        def first_index(predicate) -> int | None:
+            return next(
+                (index for index, entry in enumerate(successful) if predicate(entry)),
+                None,
+            )
+
+        crm_mutation_indexes = [
+            index
+            for index, entry in enumerate(successful)
+            if entry.get("server") in {"salesforce", "hubspot"}
+            and entry.get("mutation")
+        ]
+        first_crm_mutation = min(crm_mutation_indexes) if crm_mutation_indexes else None
+        all_required_evidence_precedes_mutation = first_crm_mutation is not None and all(
+            (
+                index := first_index(
+                    lambda entry, required_path=required_path: entry.get("server") == "filesystem"
+                    and entry.get("tool") == "read_text_file"
+                    and entry.get("arguments", {}).get("path") == required_path
+                    and "head" not in entry.get("arguments", {})
+                    and "tail" not in entry.get("arguments", {})
+                )
+            )
+            is not None
+            and index < first_crm_mutation
+            for required_path in self.spec["required_document_paths"]
+        )
+        provider_evidence_precedes_mutation = True
+        for change in self.spec["expected_changes"]:
+            mutation_index = first_index(
+                lambda entry, change=change: entry.get("server") == change["system"]
+                and entry.get("tool") == change["tool"]
+                and entry.get("arguments") == change["arguments"]
+            )
+            evidence = change.get("prewrite_evidence") or {}
+            required_paths = set(evidence.get("document_paths") or [])
+            path_indexes = [
+                first_index(
+                    lambda entry, required_path=required_path: entry.get("server") == "filesystem"
+                    and entry.get("tool") == "read_text_file"
+                    and entry.get("arguments", {}).get("path") == required_path
+                    and "head" not in entry.get("arguments", {})
+                    and "tail" not in entry.get("arguments", {})
+                )
+                for required_path in required_paths
+            ]
+            sf_id = str(evidence.get("salesforce_record_id") or "")
+            hs_id = str(evidence.get("hubspot_record_id") or "")
+            hs_object = str(evidence.get("hubspot_object") or "")
+            gong_id = str(evidence.get("gong_record_id") or "")
+            gong_tool = str(evidence.get("gong_tool") or "")
+            sf_index = first_index(
+                lambda entry, sf_id=sf_id: entry.get("server") == "salesforce"
+                and entry.get("tool") == "soqlQuery"
+                and sf_id in str(entry.get("arguments", {}).get("query", ""))
+            )
+            hs_index = first_index(
+                lambda entry, hs_id=hs_id, hs_object=hs_object: entry.get("server") == "hubspot"
+                and entry.get("tool") == "hubspot_get_object"
+                and str(entry.get("arguments", {}).get("object_id")) == hs_id
+                and str(entry.get("arguments", {}).get("object_type")) == hs_object
+            )
+            gong_index = first_index(
+                lambda entry, gong_id=gong_id, gong_tool=gong_tool: entry.get("server") == "gong"
+                and entry.get("tool") == gong_tool
+                and gong_record_id(entry) == gong_id
+            )
+            required_indexes = [*path_indexes, sf_index, hs_index, gong_index]
+            if (
+                mutation_index is None
+                or not required_paths
+                or any(index is None or index >= mutation_index for index in required_indexes)
+            ):
+                provider_evidence_precedes_mutation = False
+                break
         procedure = {
-            "minimum_relevant_unique_tool_calls": len(unique_successful) >= self.spec["minimum_tool_calls"],
             "all_evidence_read_in_full": set(self.spec["required_document_paths"]) <= full_reads,
             "custody_metadata_checked": set(self.spec["metadata_check_paths"]) <= info_paths,
             "filesystem_discovery_completed": {
@@ -804,11 +893,20 @@ class SalesWorld:
             "hubspot_discovery_completed": {
                 ("hubspot", "hubspot_get_account_details"),
                 ("hubspot", "hubspot_get_object_schema"),
-                ("hubspot", "hubspot_list_pipelines"),
-            } <= called,
-            "all_salesforce_evidence_queried": required_gong_ids <= sf_query_ids,
-            "all_hubspot_evidence_retrieved": required_hs_ids <= hs_deal_ids,
-            "all_gong_evidence_queried": required_gong_ids <= gong_deal_ids,
+            }
+            <= called
+            and bool(
+                {
+                    ("hubspot", "hubspot_list_pipelines"),
+                    ("hubspot", "hubspot_list_objects"),
+                }
+                & called
+            ),
+            "all_salesforce_evidence_queried": required_salesforce_ids <= sf_query_ids,
+            "all_hubspot_evidence_retrieved": required_hs_ids <= hs_object_ids,
+            "all_gong_evidence_queried": required_gong_ids <= gong_record_ids,
+            "all_required_evidence_precedes_mutation": all_required_evidence_precedes_mutation,
+            "all_provider_evidence_precedes_mutation": provider_evidence_precedes_mutation,
         }
         output_files = sorted(
             path.relative_to(self.output_root).as_posix()
@@ -842,6 +940,12 @@ class SalesWorld:
             else ""
         )
         state_scoring = score_state(self.state, self.initial_state, trace, self.spec)
+        procedure["all_mutations_verified_by_readback"] = all(
+            state_scoring["criteria"].get(
+                f"{change['id']}.postwrite_readback", False
+            )
+            for change in self.spec["expected_changes"]
+        )
         changes_scoring = score_changes(changes_value, self.spec)
         brief_scoring = score_brief(brief, self.spec)
         aggregate = aggregate_scores(
@@ -868,7 +972,7 @@ class SalesWorld:
             },
             "successful_tool_calls": len(successful),
             "unique_successful_tool_calls": len(unique_successful),
-            "required_tool_calls": self.spec["minimum_tool_calls"],
+            "reference_tool_calls": self.spec["reference_tool_calls"],
             "documents_read": len(set(self.spec["required_document_paths"]) & full_reads),
             "required_documents": len(self.spec["required_document_paths"]),
             "output_sha256": current_digests,

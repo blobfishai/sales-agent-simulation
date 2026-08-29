@@ -11,7 +11,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable
 
-from .generation import MINIMUM_TOOL_CALLS, RELEASE_VERSION, verification_token
+from .generation import RELEASE_VERSION, verification_token
 from .runtime.world import SalesWorld
 
 
@@ -47,6 +47,16 @@ def noop(world: SalesWorld, spec: dict[str, Any], reference: dict[str, Any]) -> 
     del world, spec, reference
 
 
+def state_only(world: SalesWorld, spec: dict[str, Any], reference: dict[str, Any]) -> None:
+    """Investigate, mutate, and read back correctly, but omit the employee handoff."""
+
+    del spec
+    for call in reference["calls"]:
+        if call["server"] == "filesystem" and call["name"] == "write_file":
+            continue
+        checked_call(world, call["server"], call["name"], call["arguments"])
+
+
 def incomplete_read(
     world: SalesWorld,
     spec: dict[str, Any],
@@ -64,6 +74,52 @@ def incomplete_read(
             skipped = True
             continue
         checked_call(world, call["server"], call["name"], call["arguments"])
+
+
+def write_before_read(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Reach the exact final state, but investigate only after mutating it."""
+
+    del spec
+    mutations = [
+        call
+        for call in reference["calls"]
+        if call["server"] in {"salesforce", "hubspot"}
+        and call["name"] in {"updateSobjectRecord", "hubspot_update_object"}
+    ]
+    outputs = [
+        call
+        for call in reference["calls"]
+        if call["server"] == "filesystem" and call["name"] == "write_file"
+    ]
+    investigation = [
+        call
+        for call in reference["calls"]
+        if call not in mutations and call not in outputs
+    ]
+    for call in [*mutations, *investigation, *outputs]:
+        checked_call(world, call["server"], call["name"], call["arguments"])
+
+
+def missing_readback(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Complete the result but trust one mutation acknowledgement without verification."""
+
+    del spec
+    skipped = False
+    for call in reference["calls"]:
+        if not skipped and call.get("phase") == "postwrite_readback":
+            skipped = True
+            continue
+        checked_call(world, call["server"], call["name"], call["arguments"])
+    if not skipped:
+        raise RuntimeError("reference trajectory had no post-write readback")
 
 
 def unauthorized_write(
@@ -140,6 +196,41 @@ def wrong_value(
     )
 
 
+def wrong_decision(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Reach the exact CRM state but report the shortcut alternative as selected."""
+
+    for call in reference["calls"]:
+        if call["server"] == "filesystem" and call["name"] == "write_file":
+            continue
+        checked_call(world, call["server"], call["name"], call["arguments"])
+    changes = deepcopy(reference["changes"])
+    wrong_option = spec["decision_options"][1]["id"]
+    changes["decision_summary"]["selected_option_id"] = wrong_option
+    changes["changes"][0]["selected_option_id"] = wrong_option
+    checked_call(
+        world,
+        "filesystem",
+        "write_file",
+        {
+            "path": "/workspace/output/changes.json",
+            "content": json.dumps(changes, ensure_ascii=False, indent=2) + "\n",
+        },
+    )
+    checked_call(
+        world,
+        "filesystem",
+        "write_file",
+        {
+            "path": "/workspace/output/brief.md",
+            "content": reference["brief_text"],
+        },
+    )
+
+
 Runner = Callable[[SalesWorld, dict[str, Any], dict[str, Any]], None]
 
 
@@ -177,7 +268,10 @@ def failed_criteria(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     criteria = report.get("criteria", {})
     for category, value in criteria.items():
-        nested = value.get("criteria", {}) if isinstance(value, dict) else value
+        if category == "procedure" and isinstance(value, dict):
+            nested = value
+        else:
+            nested = value.get("criteria", {}) if isinstance(value, dict) else value
         if isinstance(nested, dict):
             failures.extend(
                 f"{category}.{name}" for name, passed in nested.items() if not passed
@@ -194,16 +288,21 @@ def run(release: Path) -> dict[str, Any]:
 
     negative_runners: list[tuple[str, Runner]] = [
         ("shortcut", shortcut),
+        ("state_only", state_only),
         ("incomplete_read", incomplete_read),
+        ("write_before_read", write_before_read),
+        ("missing_readback", missing_readback),
         ("unauthorized_write", unauthorized_write),
         ("unauthorized_delete", unauthorized_delete),
         ("wrong_value", wrong_value),
+        ("wrong_decision", wrong_decision),
         ("noop", noop),
     ]
     oracle_passes = 0
     replay_matches = 0
     noop_nonzero_rewards = 0
     false_accepts = {name: 0 for name, _ in negative_runners}
+    oracle_call_counts: list[int] = []
     failure_samples: dict[str, list[dict[str, Any]]] = {
         name: [] for name, _ in negative_runners
     }
@@ -213,6 +312,7 @@ def run(release: Path) -> dict[str, Any]:
         trace_path = hf_root / "trajectories" / f"{task_dir.name}.jsonl"
         first = execute(task_dir, oracle, trace_destination=trace_path)
         replay = execute(task_dir, oracle)
+        oracle_call_counts.append(first["successful_tool_calls"])
         oracle_passes += int(first["passed"])
         deterministic = first == replay
         replay_matches += int(deterministic)
@@ -255,7 +355,11 @@ def run(release: Path) -> dict[str, Any]:
             "executions": len(task_dirs),
             "passes": oracle_passes,
             "failures": len(task_dirs) - oracle_passes,
-            "expected_tool_calls_per_task": MINIMUM_TOOL_CALLS,
+            "reference_tool_calls_per_task": {
+                "minimum": min(oracle_call_counts),
+                "maximum": max(oracle_call_counts),
+                "distinct_counts": sorted(set(oracle_call_counts)),
+            },
         },
         "determinism": {
             "replays": len(task_dirs),

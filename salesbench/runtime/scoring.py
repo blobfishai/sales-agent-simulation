@@ -69,6 +69,49 @@ def expected_state(initial_state: dict[str, Any], changes: list[dict[str, Any]])
     return state
 
 
+def _postwrite_readback_passed(
+    trace: list[dict[str, Any]], change: dict[str, Any]
+) -> bool:
+    successful = [entry for entry in trace if entry.get("ok")]
+    mutation_index = next(
+        (
+            index
+            for index, entry in enumerate(successful)
+            if entry.get("server") == change["system"]
+            and entry.get("tool") == change["tool"]
+            and entry.get("arguments") == change["arguments"]
+        ),
+        None,
+    )
+    evidence = change.get("postwrite_evidence") or {}
+    readback_arguments = evidence.get("arguments")
+    if mutation_index is None or not isinstance(readback_arguments, dict):
+        return False
+    for entry in successful[mutation_index + 1 :]:
+        if (
+            entry.get("server") != evidence.get("server")
+            or entry.get("tool") != evidence.get("name")
+            or entry.get("arguments") != readback_arguments
+        ):
+            continue
+        try:
+            observation = json.loads(str(entry.get("observation", "")))
+        except json.JSONDecodeError:
+            return False
+        if change["system"] == "salesforce":
+            records = observation.get("records", []) if isinstance(observation, dict) else []
+            value = records[0].get(change["field"]) if records else None
+        else:
+            properties = (
+                observation.get("properties", {})
+                if isinstance(observation, dict)
+                else {}
+            )
+            value = properties.get(change["field"])
+        return value == change["after"]
+    return False
+
+
 def score_state(
     current_state: dict[str, Any],
     initial_state: dict[str, Any],
@@ -104,11 +147,13 @@ def score_state(
             and entry.get("arguments") == change["arguments"]
         ]
         called_once = len(matching_calls) == 1
+        readback_ok = _postwrite_readback_passed(trace, change)
         for suffix, passed in (
             ("initial_value", before_ok),
             ("target_value", after_ok),
             ("authorized_fields", all_fields_ok),
             ("exactly_one_authorized_call", called_once),
+            ("postwrite_readback", readback_ok),
         ):
             criteria[f"{change['id']}.{suffix}"] = bool(passed)
         details.append(
@@ -118,6 +163,7 @@ def score_state(
                 "actual_value": _field(current, change["system"], change["field"]),
                 "expected_value": change["after"],
                 "matching_calls": len(matching_calls),
+                "postwrite_readback": readback_ok,
             }
         )
     expected = expected_state(initial_state, spec["expected_changes"])
@@ -155,6 +201,24 @@ CHANGE_FIELDS = (
     "owner",
     "deadline",
     "portfolio_key",
+    "value_kind",
+    "decision_method",
+    "decision_inputs",
+    "decision_explanation",
+    "selected_option_id",
+    "evidence_sources",
+)
+
+HOLD_FIELDS = (
+    "id",
+    "portfolio_key",
+    "account_name",
+    "blocking_condition",
+    "primary_source",
+    "corroborating_source",
+    "owner",
+    "deadline",
+    "required_next_step",
 )
 
 
@@ -162,16 +226,27 @@ def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     expected = spec["expected_changes"]
     actual = value if isinstance(value, dict) else {}
     rows = actual.get("changes") if isinstance(actual.get("changes"), list) else []
+    holds = actual.get("holds") if isinstance(actual.get("holds"), list) else []
     rows_by_id = {
         str(row.get("id")): row
         for row in rows
         if isinstance(row, dict) and isinstance(row.get("id"), str)
     }
     row_ids = [row.get("id") for row in rows if isinstance(row, dict)]
+    hold_rows_by_id = {
+        str(row.get("id")): row
+        for row in holds
+        if isinstance(row, dict) and isinstance(row.get("id"), str)
+    }
+    hold_ids = [row.get("id") for row in holds if isinstance(row, dict)]
     criteria: dict[str, bool] = {
         "changes_is_object": isinstance(value, dict),
         "changes_exact_count": len(rows) == len(expected),
         "change_ids_unique": len(row_ids) == len(set(row_ids)) == len(expected),
+        "holds_exact_count": len(holds) == spec["expected_hold_count"],
+        "hold_ids_unique": (
+            len(hold_ids) == len(set(hold_ids)) == spec["expected_hold_count"]
+        ),
     }
     expected_top = {
         "schema_version": "salesbench.changes.v1",
@@ -182,6 +257,15 @@ def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     }
     for key, expected_value in expected_top.items():
         criteria[f"top_level.{key}"] = actual.get(key) == expected_value
+    decision_summary = (
+        actual.get("decision_summary")
+        if isinstance(actual.get("decision_summary"), dict)
+        else {}
+    )
+    for key, expected_value in spec["expected_decision_summary"].items():
+        criteria[f"decision_summary.{key}"] = (
+            decision_summary.get(key) == expected_value
+        )
     details: list[dict[str, Any]] = []
     for expected_row in expected:
         actual_row = rows_by_id.get(expected_row["id"])
@@ -192,11 +276,25 @@ def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
             checks[field] = bool(passed)
             criteria[f"{expected_row['id']}.{field}"] = bool(passed)
         details.append({"id": expected_row["id"], "checks": checks})
+    hold_details: list[dict[str, Any]] = []
+    for expected_hold in spec["expected_holds"]:
+        actual_hold = hold_rows_by_id.get(expected_hold["id"])
+        checks = {"present": isinstance(actual_hold, dict)}
+        criteria[f"{expected_hold['id']}.present"] = checks["present"]
+        for field in HOLD_FIELDS:
+            passed = (
+                isinstance(actual_hold, dict)
+                and actual_hold.get(field) == expected_hold[field]
+            )
+            checks[field] = bool(passed)
+            criteria[f"{expected_hold['id']}.{field}"] = bool(passed)
+        hold_details.append({"id": expected_hold["id"], "checks": checks})
     return {
         "criteria": criteria,
         "score": round(mean(criteria), 6),
         "passed": all(criteria.values()),
         "details": details,
+        "hold_details": hold_details,
     }
 
 
@@ -220,10 +318,40 @@ def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
             change["gong_evidence_id"],
             change["owner"],
             change["deadline"],
+            change["decision_method"],
+            change["decision_explanation"],
+            change["selected_option_id"],
+            *change["evidence_sources"],
         ]
         missing = [anchor for anchor in anchors if normalize(anchor) not in normalized]
         criteria[f"change.{change['id']}"] = not missing
         details.append({"id": change["id"], "missing_anchors": missing})
+    decision = spec["expected_decision_summary"]
+    decision_anchors = [
+        decision["selected_option_id"],
+        decision["method"],
+        *decision["alternatives_considered"],
+    ]
+    missing_decision = [
+        anchor for anchor in decision_anchors if normalize(str(anchor)) not in normalized
+    ]
+    criteria["decision_and_alternatives"] = not missing_decision
+    hold_details: list[dict[str, Any]] = []
+    for hold in spec["expected_holds"]:
+        anchors = [
+            hold["id"],
+            hold["portfolio_key"],
+            hold["account_name"],
+            hold["blocking_condition"],
+            hold["primary_source"],
+            hold["corroborating_source"],
+            hold["owner"],
+            hold["deadline"],
+            hold["required_next_step"],
+        ]
+        missing = [anchor for anchor in anchors if normalize(str(anchor)) not in normalized]
+        criteria[f"hold.{hold['id']}"] = not missing
+        hold_details.append({"id": hold["id"], "missing_anchors": missing})
     forbidden = [
         claim for claim in spec["forbidden_claims"] if normalize(claim) in normalized
     ]
@@ -233,6 +361,8 @@ def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
         "score": round(mean(criteria), 6),
         "passed": all(criteria.values()),
         "details": details,
+        "decision_missing_anchors": missing_decision,
+        "hold_details": hold_details,
         "forbidden_claims_present": forbidden,
     }
 
@@ -278,4 +408,3 @@ def aggregate_scores(
         "category_scores": scores,
         "weights": weights,
     }
-
