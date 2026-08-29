@@ -24,6 +24,7 @@ from .decision_specs import DECISION_RULES, validate_decision_rules
 
 RELEASE_VERSION = "3.2.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
+FIXED_XLSX_ZIP_TIMESTAMP = (2026, 8, 26, 12, 0, 0)
 DOCUMENT_COUNT = 28
 REQUIRED_TEXT_DOCUMENT_COUNT = 24
 METADATA_CHECK_COUNT = 8
@@ -329,10 +330,18 @@ def _xlsx_bytes(sheets: dict[str, list[dict[str, Any]]]) -> bytes:
     def escaped(value: Any) -> str:
         return html.escape(str(value), quote=True)
 
+    def write_member(archive: zipfile.ZipFile, name: str, content: str) -> None:
+        member = zipfile.ZipInfo(name, date_time=FIXED_XLSX_ZIP_TIMESTAMP)
+        member.compress_type = zipfile.ZIP_DEFLATED
+        member.create_system = 3
+        member.external_attr = 0o600 << 16
+        archive.writestr(member, content)
+
     output = io.BytesIO()
     names = list(sheets)[:4]
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
+        write_member(
+            archive,
             "[Content_Types].xml",
             '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
             + "".join(
@@ -341,11 +350,13 @@ def _xlsx_bytes(sheets: dict[str, list[dict[str, Any]]]) -> bytes:
             )
             + "</Types>",
         )
-        archive.writestr(
+        write_member(
+            archive,
             "_rels/.rels",
             '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
         )
-        archive.writestr(
+        write_member(
+            archive,
             "xl/workbook.xml",
             '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
             + "".join(
@@ -354,7 +365,8 @@ def _xlsx_bytes(sheets: dict[str, list[dict[str, Any]]]) -> bytes:
             )
             + "</sheets></workbook>",
         )
-        archive.writestr(
+        write_member(
+            archive,
             "xl/_rels/workbook.xml.rels",
             '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
             + "".join(
@@ -374,7 +386,8 @@ def _xlsx_bytes(sheets: dict[str, list[dict[str, Any]]]) -> bytes:
                     for column, value in enumerate(row, 1)
                 )
                 body.append(f'<row r="{row_index}">{cells}</row>')
-            archive.writestr(
+            write_member(
+                archive,
                 f"xl/worksheets/sheet{sheet_index}.xml",
                 '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
                 + "".join(body)

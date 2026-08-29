@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import tempfile
 import unittest
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from salesbench.generation import (
     MAX_TARGET_CHANGE_COUNT,
     MIN_REFERENCE_TOOL_CALLS,
     MIN_TARGET_CHANGE_COUNT,
+    FIXED_XLSX_ZIP_TIMESTAMP,
     generate_all,
 )
 
@@ -355,6 +358,33 @@ class CatalogGenerationTests(unittest.TestCase):
             self.assertGreaterEqual(len(suffixes), 9)
             self.assertIn(".pdf", suffixes)
             self.assertIn(".xlsx", suffixes)
+
+    def test_xlsx_packages_are_byte_reproducible_and_timestamp_pinned(self) -> None:
+        rebuilt = generate_all()
+        first_xlsx = {
+            (task.task_id, relative): content
+            for task in self.tasks
+            for relative, content in task.documents.items()
+            if relative.endswith(".xlsx")
+        }
+        rebuilt_xlsx = {
+            (task.task_id, relative): content
+            for task in rebuilt
+            for relative, content in task.documents.items()
+            if relative.endswith(".xlsx")
+        }
+        self.assertEqual(first_xlsx, rebuilt_xlsx)
+        self.assertEqual(len(first_xlsx), 200)
+        for content in first_xlsx.values():
+            self.assertIsInstance(content, bytes)
+            with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                self.assertTrue(archive.infolist())
+                self.assertTrue(
+                    all(
+                        member.date_time == FIXED_XLSX_ZIP_TIMESTAMP
+                        for member in archive.infolist()
+                    )
+                )
 
     def test_seeded_documents_are_baked_into_public_harbor_images(self) -> None:
         compose = compose_yaml()
