@@ -62,6 +62,28 @@ class WorldTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertLessEqual(report["reward"], 0.49)
 
+    def test_correct_result_with_task_specific_evidence_omitted_is_rejected(self) -> None:
+        world = self.world("missing-task-investigation")
+        required = self.task.spec["required_investigation_calls"][0]
+        skipped = False
+        for call in self.task.reference["calls"]:
+            if (
+                not skipped
+                and call["server"] == required["server"]
+                and call["name"] == required["name"]
+                and call["arguments"] == required["arguments"]
+            ):
+                skipped = True
+                continue
+            result = world.call_tool(call["server"], call["name"], call["arguments"])
+            self.assertFalse(result["isError"])
+        self.assertTrue(skipped)
+        report = world.verify(verification_token(self.task.task_id))
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["criteria"]["procedure"]["task_specific_investigation_completed"]
+        )
+
     def test_correct_writes_followed_by_late_reads_are_rejected(self) -> None:
         world = self.world("write-first")
         calls = self.task.reference["calls"]

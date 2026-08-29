@@ -22,7 +22,7 @@ from .contracts import CONTRACT_PINS
 from .decision_specs import DECISION_RULES, validate_decision_rules
 
 
-RELEASE_VERSION = "3.1.0"
+RELEASE_VERSION = "3.2.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
 DOCUMENT_COUNT = 28
 REQUIRED_TEXT_DOCUMENT_COUNT = 24
@@ -31,8 +31,8 @@ PORTFOLIO_ENTITY_COUNT = 16
 MIN_TARGET_CHANGE_COUNT = 5
 MAX_TARGET_CHANGE_COUNT = 12
 DISTRACTOR_ENTITY_COUNT = 48
-MIN_REFERENCE_TOOL_CALLS = 62
-MAX_REFERENCE_TOOL_CALLS = 103
+MIN_REFERENCE_TOOL_CALLS = 68
+MAX_REFERENCE_TOOL_CALLS = 114
 DELIVERABLES = ("changes.json", "brief.md")
 
 validate_action_specs({spine.slug for spine in TASK_SPINES})
@@ -2277,6 +2277,227 @@ def build_seed(
     }
 
 
+def _task_investigation_calls(
+    spine: TaskSpine,
+    task_number: int,
+    entities: list[dict[str, Any]],
+    document_paths: list[str],
+    metadata_paths: list[str],
+) -> list[dict[str, Any]]:
+    """Build a task-specific, causally relevant read plan.
+
+    Every probe is a provider-native read that answers an identity, ownership,
+    association, recency, or scope question in the employee's workflow.  The
+    stable authored spine selects a different subset and order, so two tasks do
+    not collapse to the same generic CRM reconnaissance recipe.
+    """
+
+    action_spec = ACTION_SPECS[spine.slug]
+    first, second, third = entities[:3]
+    held_entities = [entity for entity in entities if not entity["target"]]
+    hubspot_ids = [
+        _provider_record_id(entity, "hubspot", action_spec.hubspot_object)
+        for entity in entities[:3]
+    ]
+    related_salesforce_object = {
+        "forecast-reconciliation": "Quote",
+        "pipeline-recovery": "Task",
+        "gong-action-reconciliation": "Task",
+        "identity-migration": "Contact",
+        "lead-routing": "Lead",
+        "renewal-expansion": "Opportunity",
+        "quote-governance": "Quote",
+        "account-planning": "Contact",
+        "sequence-compliance": "CampaignMember",
+        "cutover-audit": "Account",
+    }[spine.family]
+    if related_salesforce_object == action_spec.salesforce_object:
+        related_salesforce_object = next(
+            candidate
+            for candidate in ("Account", "Contact", "Lead", "Opportunity", "Quote", "Task")
+            if candidate != action_spec.salesforce_object
+        )
+    related_hubspot_object = {
+        "forecast-reconciliation": "deals",
+        "pipeline-recovery": "tasks",
+        "gong-action-reconciliation": "tasks",
+        "identity-migration": "companies",
+        "lead-routing": "contacts",
+        "renewal-expansion": "deals",
+        "quote-governance": "deals",
+        "account-planning": "contacts",
+        "sequence-compliance": "contacts",
+        "cutover-audit": "companies",
+    }[spine.family]
+    if related_hubspot_object == action_spec.hubspot_object:
+        related_hubspot_object = next(
+            candidate
+            for candidate in ("companies", "contacts", "deals", "tasks")
+            if candidate != action_spec.hubspot_object
+        )
+    search_suffixes = sorted(
+        {PurePosixPath(path).suffix for path in document_paths} - {".eml"}
+    )
+    selected_suffix = search_suffixes[stable_seed(f"{spine.slug}|source-format") % len(search_suffixes)]
+    gong_probes = [
+        _gong_evidence_call(spine, entity)
+        for entity in held_entities[:3]
+    ]
+    pool: list[dict[str, Any]] = [
+        {
+            "server": "salesforce", "name": "find",
+            "arguments": {"search": f"FIND {{{first['portfolio_key']}}}"},
+            "purpose": "cross-object identity search",
+        },
+        {
+            "server": "salesforce", "name": "listRecentSobjectRecords",
+            "arguments": {"sobject-name": related_salesforce_object},
+            "purpose": "recent related-record scope",
+        },
+        {
+            "server": "salesforce", "name": "getObjectSchema",
+            "arguments": {"object-name": related_salesforce_object},
+            "purpose": "related-object field authority",
+        },
+        {
+            "server": "salesforce", "name": "getRelatedRecords",
+            "arguments": {
+                "sobject-name": "Opportunity", "id": first["sf_opportunity_id"],
+                "relationship-path": "Tasks",
+            },
+            "purpose": "existing follow-up containment",
+        },
+        {
+            "server": "salesforce", "name": "getRelatedRecords",
+            "arguments": {
+                "sobject-name": "Opportunity", "id": second["sf_opportunity_id"],
+                "relationship-path": "Quotes",
+            },
+            "purpose": "commercial-record corroboration",
+        },
+        {
+            "server": "salesforce", "name": "getRelatedRecords",
+            "arguments": {
+                "sobject-name": "Account", "id": third["sf_account_id"],
+                "relationship-path": "Contacts",
+            },
+            "purpose": "stakeholder identity corroboration",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_list_owners",
+            "arguments": {"limit": 100, "archived": False},
+            "purpose": "active-owner capacity check",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_get_object_schema",
+            "arguments": {"object_type": related_hubspot_object},
+            "purpose": "related-object property authority",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_search_objects",
+            "arguments": {
+                "object_type": action_spec.hubspot_object,
+                "query": first["portfolio_key"],
+                "properties": [action_spec.hubspot_field, "salesbench_key"],
+                "limit": 20,
+            },
+            "purpose": "cross-system portfolio-key search",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_batch_read_objects",
+            "arguments": {
+                "object_type": action_spec.hubspot_object,
+                "ids": hubspot_ids,
+                "properties": [action_spec.hubspot_field, "salesbench_key"],
+            },
+            "purpose": "bounded provider population comparison",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_list_associations",
+            "arguments": {
+                "object_type": "deals", "object_id": first["hs_deal_id"],
+                "to_object_type": "companies", "limit": 100,
+            },
+            "purpose": "deal-to-company identity join",
+        },
+        {
+            "server": "hubspot", "name": "hubspot_list_objects",
+            "arguments": {
+                "object_type": related_hubspot_object, "limit": 3,
+                "properties": ["salesbench_key"], "associations": [], "archived": False,
+            },
+            "purpose": "neighbor-record scope check",
+        },
+        {
+            **gong_probes[0],
+            "purpose": "conversation-backed account identity check",
+        },
+        {
+            **gong_probes[1],
+            "purpose": "independent buyer-evidence comparison",
+        },
+        {
+            **gong_probes[2],
+            "purpose": "neighbor-record private-data boundary check",
+        },
+        {
+            "server": "filesystem", "name": "search_files",
+            "arguments": {
+                "path": "/workspace/documents", "pattern": f"**/*{selected_suffix}",
+                "excludePatterns": [],
+            },
+            "purpose": "native source-format inventory",
+        },
+        {
+            "server": "filesystem", "name": "get_file_info",
+            "arguments": {
+                "path": next(
+                    path
+                    for path in document_paths[task_number % len(document_paths) :]
+                    + document_paths[: task_number % len(document_paths)]
+                    if path not in metadata_paths
+                )
+            },
+            "purpose": "task-specific source revision metadata",
+        },
+    ]
+    rotation = stable_seed(f"{spine.slug}|investigation-rotation") % len(pool)
+    strides = (1, 3, 5, 7, 11, 13)
+    stride = strides[stable_seed(f"{spine.slug}|investigation-stride") % len(strides)]
+    count = 6 + stable_seed(f"{spine.slug}|investigation-count") % 6
+    return [deepcopy(pool[(rotation + index * stride) % len(pool)]) for index in range(count)]
+
+
+def _evidence_folder_order(spine: TaskSpine) -> list[str]:
+    """Order source roles from the task's authored causal rule, not file names."""
+
+    rule = DECISION_RULES[spine.slug]
+    signature = f"{rule.observation_key}|{rule.authority_key}|{rule.method}"
+    middle_roles = [
+        role
+        for role in EVIDENCE_ROLES
+        if role not in {"identity_crosswalk", "exception_record"}
+    ]
+    role_order = [
+        "identity_crosswalk",
+        *sorted(
+            middle_roles,
+            key=lambda role: stable_seed(f"{signature}|role|{role}"),
+        ),
+        "exception_record",
+    ]
+    folder_roles = EVIDENCE_ROLE_FOLDERS[spine.family]
+    ordered: list[str] = []
+    for role in role_order:
+        ordered.extend(
+            sorted(
+                (folder for folder, folder_role in folder_roles.items() if folder_role == role),
+                key=lambda folder: stable_seed(f"{signature}|folder|{folder}"),
+            )
+        )
+    return ordered
+
+
 def _reference_calls(
     spine: TaskSpine,
     task_number: int,
@@ -2319,20 +2540,23 @@ def _reference_calls(
         ),
     ]
 
-    # Follow a business-derived order: orient to the systems, then reconcile
-    # evidence sources in the authored workflow order.  Diversity must come
-    # from different supported records and actions, not shuffled file reads.
+    # Follow a business-derived order: identity first, exceptions last, and the
+    # intervening source roles ordered by the task's authored observation,
+    # authority, and derivation rule.
     paths_by_folder: dict[str, list[str]] = {}
     for path in document_paths:
         folder = PurePosixPath(path).parts[-2]
         paths_by_folder.setdefault(folder, []).append(path)
-    folders = list(FAMILY_SETTINGS[spine.family]["folders"])
+    folders = _evidence_folder_order(spine)
     metadata_by_folder = {
         PurePosixPath(path).parts[-2]: path for path in metadata_paths
     }
     evidence_folders = set(paths_by_folder) | set(metadata_by_folder)
     folders.extend(sorted(evidence_folders - set(folders)))
-    calls: list[dict[str, Any]] = [*orientation, *system_discovery]
+    task_investigation = _task_investigation_calls(
+        spine, task_number, entities, document_paths, metadata_paths
+    )
+    calls: list[dict[str, Any]] = [*orientation, *system_discovery, *task_investigation]
     for folder in folders:
         paths = sorted(paths_by_folder.get(folder, []))
         calls.extend(
@@ -2724,6 +2948,10 @@ def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
         "filesystem_discovery_completed": "Inventory, search, and traverse the released evidence room.",
         "salesforce_discovery_completed": "Identify the Salesforce user and inspect the relevant object contract.",
         "hubspot_discovery_completed": "Inspect the HubSpot account, deal schema, and active pipelines.",
+        "task_specific_investigation_completed": (
+            "Before changing CRM state, complete this task's distinct identity, association, owner, "
+            "scope, and corroboration checks: " + "; ".join(spec["investigation_purposes"]) + "."
+        ),
         "all_salesforce_evidence_queried": "Query the Salesforce record corresponding to every proposed portfolio correction.",
         "all_hubspot_evidence_retrieved": "Retrieve the HubSpot record corresponding to every proposed portfolio correction.",
         "all_gong_evidence_queried": "Use the permitted Gong deal insight for every proposed portfolio correction.",
@@ -3013,6 +3241,19 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         "agent_visible_document_paths": all_document_paths,
         "required_document_paths": required_document_paths,
         "metadata_check_paths": first_by_folder,
+        "required_investigation_calls": [
+            {
+                "server": call["server"],
+                "name": call["name"],
+                "arguments": deepcopy(call["arguments"]),
+                "purpose": call["purpose"],
+            }
+            for call in calls
+            if call.get("purpose")
+        ],
+        "investigation_purposes": [
+            call["purpose"] for call in calls if call.get("purpose")
+        ],
         "reference_tool_calls": len(calls),
         "required_servers": ["filesystem", "salesforce", "hubspot", "gong"],
         "deliverables": list(DELIVERABLES),

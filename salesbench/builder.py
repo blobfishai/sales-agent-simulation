@@ -817,12 +817,13 @@ def _validate_report(report: dict[str, Any]) -> None:
         "unique_semantic_call_sequences": report["unique_semantic_call_sequences"] == 100,
         "unique_semantic_action_graphs": report["unique_semantic_action_graphs"] == 100,
         "semantic_sequence_similarity": (
-            report["semantic_sequence_similarity"]["maximum_sequence_match"] < 0.92
+            report["semantic_sequence_similarity"]["maximum_sequence_match"] < 0.85
         ),
         "evidence_role_coverage": report["causal_evidence"]["every_task_has_one_of_each_role_per_portfolio_key"],
         "no_precomputed_answer_keys": not report["causal_evidence"]["precomputed_answer_hits"],
         "no_single_file_transition_answer": not report["causal_evidence"]["single_file_complete_transition_hits"],
         "read_before_write_control": report["causal_evidence"]["required_evidence_precedes_mutation"],
+        "task_specific_investigation_control": report["causal_evidence"]["task_specific_investigation_precedes_mutation"],
         "provider_prewrite_control": report["causal_evidence"]["provider_evidence_precedes_each_mutation"],
         "postwrite_readback_control": report["causal_evidence"]["each_mutation_has_exact_postwrite_readback"],
         "outputs_follow_readback": report["causal_evidence"]["deliverables_follow_all_readbacks"],
@@ -847,12 +848,23 @@ def _causal_trace_audit(task: GeneratedTask) -> dict[str, bool]:
     ]
     if not mutation_indexes:
         return {
+            "task_specific_investigation_precedes_mutation": False,
             "required_evidence_precedes_mutation": False,
             "provider_evidence_precedes_each_mutation": False,
             "each_mutation_has_exact_postwrite_readback": False,
             "deliverables_follow_all_readbacks": False,
         }
     first_mutation = min(mutation_indexes)
+    task_specific_investigation_precedes = all(
+        any(
+            index < first_mutation
+            and call["server"] == required["server"]
+            and call["name"] == required["name"]
+            and call["arguments"] == required["arguments"]
+            for index, call in enumerate(calls)
+        )
+        for required in task.spec["required_investigation_calls"]
+    )
     full_read_indexes = {
         call["arguments"].get("path"): index
         for index, call in enumerate(calls)
@@ -925,6 +937,7 @@ def _causal_trace_audit(task: GeneratedTask) -> dict[str, bool]:
         and min(output_indexes) > max(postwrite_indexes)
     )
     return {
+        "task_specific_investigation_precedes_mutation": task_specific_investigation_precedes,
         "required_evidence_precedes_mutation": all_documents_precede,
         "provider_evidence_precedes_each_mutation": provider_prewrite,
         "each_mutation_has_exact_postwrite_readback": postwrite,
@@ -1151,6 +1164,10 @@ def build(output: Path) -> dict[str, Any]:
             "derived_amount_leaks": derived_amount_leaks,
             "required_evidence_precedes_mutation": all(
                 audit["required_evidence_precedes_mutation"]
+                for audit in trace_audits
+            ),
+            "task_specific_investigation_precedes_mutation": all(
+                audit["task_specific_investigation_precedes_mutation"]
                 for audit in trace_audits
             ),
             "provider_evidence_precedes_each_mutation": all(
