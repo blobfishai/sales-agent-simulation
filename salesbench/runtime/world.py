@@ -879,6 +879,18 @@ class SalesWorld:
             ):
                 provider_evidence_precedes_mutation = False
                 break
+        task_specific_investigation_completed = first_crm_mutation is not None and all(
+            (
+                index := first_index(
+                    lambda entry, required=required: entry.get("server") == required["server"]
+                    and entry.get("tool") == required["name"]
+                    and entry.get("arguments") == required["arguments"]
+                )
+            )
+            is not None
+            and index < first_crm_mutation
+            for required in self.spec.get("required_investigation_calls", [])
+        )
         procedure = {
             "all_evidence_read_in_full": set(self.spec["required_document_paths"]) <= full_reads,
             "custody_metadata_checked": set(self.spec["metadata_check_paths"]) <= info_paths,
@@ -902,6 +914,7 @@ class SalesWorld:
                 }
                 & called
             ),
+            "task_specific_investigation_completed": task_specific_investigation_completed,
             "all_salesforce_evidence_queried": required_salesforce_ids <= sf_query_ids,
             "all_hubspot_evidence_retrieved": required_hs_ids <= hs_object_ids,
             "all_gong_evidence_queried": required_gong_ids <= gong_record_ids,

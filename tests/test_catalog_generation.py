@@ -8,7 +8,15 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from salesbench.builder import build, compose_yaml, dataset_card, main_dockerfile, world_dockerfile
+from salesbench.builder import (
+    build,
+    compose_yaml,
+    dataset_card,
+    main_dockerfile,
+    maximum_sequence_similarity,
+    semantic_call_sequence,
+    world_dockerfile,
+)
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
 from salesbench.decision_specs import DECISION_RULES
 from salesbench.generation import (
@@ -42,6 +50,12 @@ class CatalogGenerationTests(unittest.TestCase):
             self.assertGreaterEqual(len(task.reference["calls"]), MIN_REFERENCE_TOOL_CALLS)
             self.assertLessEqual(len(task.reference["calls"]), MAX_REFERENCE_TOOL_CALLS)
             self.assertEqual(task.spec["reference_tool_calls"], len(task.reference["calls"]))
+            self.assertGreaterEqual(len(task.spec["required_investigation_calls"]), 6)
+            self.assertLessEqual(len(task.spec["required_investigation_calls"]), 11)
+            self.assertEqual(
+                len(task.spec["investigation_purposes"]),
+                len(task.spec["required_investigation_calls"]),
+            )
             self.assertGreaterEqual(len(task.spec["expected_changes"]), MIN_TARGET_CHANGE_COUNT)
             self.assertLessEqual(len(task.spec["expected_changes"]), MAX_TARGET_CHANGE_COUNT)
             self.assertEqual(
@@ -69,6 +83,16 @@ class CatalogGenerationTests(unittest.TestCase):
         ]
         self.assertEqual(len(set(prompts)), 100)
         self.assertEqual(len(set(sequences)), 100)
+        self.assertLess(
+            maximum_sequence_similarity(sequences)["maximum_sequence_match"],
+            0.95,
+        )
+        semantic_sequences = [semantic_call_sequence(task) for task in self.tasks]
+        self.assertEqual(len(set(semantic_sequences)), 100)
+        self.assertLess(
+            maximum_sequence_similarity(semantic_sequences)["maximum_sequence_match"],
+            0.85,
+        )
         for prompt in prompts:
             self.assertGreaterEqual(len(prompt.split()), 45)
             self.assertLessEqual(len(prompt.split()), 120)

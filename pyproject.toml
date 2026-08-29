@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "salesbench-100"
-version = "3.0.0"
+version = "3.2.0"
 description = "Deterministic long-horizon sales-agent benchmark across Salesforce, HubSpot, Gong, and RevOps workflows"
 readme = "README.md"
 requires-python = ">=3.11"

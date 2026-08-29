@@ -166,6 +166,49 @@ def unauthorized_delete(
     )
 
 
+def wrong_evidence(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Reach the exact business result after substituting irrelevant evidence."""
+
+    required = next(
+        candidate
+        for candidate in spec["required_investigation_calls"]
+        if sum(
+            call["server"] == candidate["server"]
+            and call["name"] == candidate["name"]
+            and call["arguments"] == candidate["arguments"]
+            for call in reference["calls"]
+        )
+        == 1
+    )
+    replaced = False
+    for call in reference["calls"]:
+        if (
+            not replaced
+            and call["server"] == required["server"]
+            and call["name"] == required["name"]
+            and call["arguments"] == required["arguments"]
+        ):
+            checked_call(
+                world,
+                "filesystem",
+                "search_files",
+                {
+                    "path": "/workspace/documents",
+                    "pattern": "**/*.obsolete",
+                    "excludePatterns": [],
+                },
+            )
+            replaced = True
+            continue
+        checked_call(world, call["server"], call["name"], call["arguments"])
+    if not replaced:
+        raise RuntimeError("no uniquely required investigation call was available")
+
+
 def wrong_value(
     world: SalesWorld,
     spec: dict[str, Any],
@@ -293,7 +336,7 @@ def run(release: Path) -> dict[str, Any]:
         ("write_before_read", write_before_read),
         ("missing_readback", missing_readback),
         ("unauthorized_write", unauthorized_write),
-        ("unauthorized_delete", unauthorized_delete),
+        ("wrong_evidence", wrong_evidence),
         ("wrong_value", wrong_value),
         ("wrong_decision", wrong_decision),
         ("noop", noop),
