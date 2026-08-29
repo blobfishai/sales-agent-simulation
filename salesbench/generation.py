@@ -9,6 +9,7 @@ import io
 import json
 import random
 import re
+import zipfile
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -21,16 +22,17 @@ from .contracts import CONTRACT_PINS
 from .decision_specs import DECISION_RULES, validate_decision_rules
 
 
-RELEASE_VERSION = "3.0.0"
+RELEASE_VERSION = "3.1.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
-DOCUMENT_COUNT = 12
+DOCUMENT_COUNT = 28
+REQUIRED_TEXT_DOCUMENT_COUNT = 24
 METADATA_CHECK_COUNT = 8
 PORTFOLIO_ENTITY_COUNT = 16
 MIN_TARGET_CHANGE_COUNT = 5
 MAX_TARGET_CHANGE_COUNT = 12
 DISTRACTOR_ENTITY_COUNT = 48
-MIN_REFERENCE_TOOL_CALLS = 56
-MAX_REFERENCE_TOOL_CALLS = 91
+MIN_REFERENCE_TOOL_CALLS = 62
+MAX_REFERENCE_TOOL_CALLS = 103
 DELIVERABLES = ("changes.json", "brief.md")
 
 validate_action_specs({spine.slug for spine in TASK_SPINES})
@@ -271,7 +273,7 @@ class GeneratedTask:
     task_id: str
     spine: TaskSpine
     prompt: str
-    documents: dict[str, str]
+    documents: dict[str, str | bytes]
     spec: dict[str, Any]
     reference: dict[str, Any]
     seed: dict[str, Any]
@@ -283,6 +285,273 @@ def canonical_json(value: Any) -> str:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _pdf_bytes(title: str, lines: list[str]) -> bytes:
+    safe = [
+        re.sub(r"[^\x20-\x7e]", " ", value)
+        .replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+        for value in [title, *lines]
+    ]
+    commands = ["BT", "/F1 12 Tf", "54 744 Td"]
+    for index, line in enumerate(safe[:28]):
+        if index:
+            commands.append("0 -23 Td")
+        commands.append(f"({line[:105]}) Tj")
+    commands.append("ET")
+    stream = "\n".join(commands).encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        f"<< /Length {len(stream)} >>\nstream\n".encode() + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, obj in enumerate(objects, 1):
+        offsets.append(len(output))
+        output.extend(f"{index} 0 obj\n".encode() + obj + b"\nendobj\n")
+    xref = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f\n".encode())
+    output.extend(
+        b"".join(f"{offset:010d} 00000 n\n".encode() for offset in offsets[1:])
+    )
+    output.extend(
+        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+    )
+    return bytes(output)
+
+
+def _xlsx_bytes(sheets: dict[str, list[dict[str, Any]]]) -> bytes:
+    def escaped(value: Any) -> str:
+        return html.escape(str(value), quote=True)
+
+    output = io.BytesIO()
+    names = list(sheets)[:4]
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+            + "".join(
+                f'<Override PartName="/xl/worksheets/sheet{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+                for index in range(1, len(names) + 1)
+            )
+            + "</Types>",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+        )
+        archive.writestr(
+            "xl/workbook.xml",
+            '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>'
+            + "".join(
+                f'<sheet name="{escaped(name[:31])}" sheetId="{index}" r:id="rId{index}"/>'
+                for index, name in enumerate(names, 1)
+            )
+            + "</sheets></workbook>",
+        )
+        archive.writestr(
+            "xl/_rels/workbook.xml.rels",
+            '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(
+                f'<Relationship Id="rId{index}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{index}.xml"/>'
+                for index in range(1, len(names) + 1)
+            )
+            + "</Relationships>",
+        )
+        for sheet_index, name in enumerate(names, 1):
+            rows = sheets[name]
+            fields = sorted({key for row in rows for key in row}) or ["record"]
+            values = [fields] + [[row.get(field, "") for field in fields] for row in rows]
+            body = []
+            for row_index, row in enumerate(values, 1):
+                cells = "".join(
+                    f'<c r="{chr(64 + column)}{row_index}" t="inlineStr"><is><t>{escaped(value)}</t></is></c>'
+                    for column, value in enumerate(row, 1)
+                )
+                body.append(f'<row r="{row_index}">{cells}</row>')
+            archive.writestr(
+                f"xl/worksheets/sheet{sheet_index}.xml",
+                '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'
+                + "".join(body)
+                + "</sheetData></worksheet>",
+            )
+    return output.getvalue()
+
+
+def _supplemental_documents(
+    spine: TaskSpine,
+    task_id: str,
+    task_number: int,
+) -> dict[str, str | bytes]:
+    revisions = [
+        {
+            "case_id": task_id,
+            "source": source,
+            "revision": f"{task_number:03d}-{index:02d}",
+            "effective_period": spine.period if index <= 8 else f"retired-before-{spine.period}",
+            "status": "current" if index <= 8 else "retired",
+            "control_note": note,
+        }
+        for index, (source, note) in enumerate(
+            [
+                ("Salesforce", "Identity must be resolved by immutable CRM ID, not account name."),
+                ("HubSpot", "Lifecycle state is corroboration and cannot authorize a Salesforce write."),
+                ("Gong", "Buyer statements are read-only evidence and private call content stays excluded."),
+                ("Forecast", "The current signed forecast revision controls period inclusion."),
+                ("Territory", "Current owner and region must agree before routing changes."),
+                ("Approval", "Only approvals effective for the requested period authorize action."),
+                ("Finance", "Amount inputs require current-period reconciliation and explicit rounding."),
+                ("Operations", "Every changed record needs a post-write readback and auditable handoff."),
+                ("Legacy CRM", "This export is retained for lineage only and is not controlling authority."),
+                ("Former owner", "A prior owner suggestion is non-authoritative until current records agree."),
+                ("Draft policy", "The superseded review draft cannot replace the effective control."),
+                ("Archive", "Historical evidence may explain a discrepancy but cannot authorize a current write."),
+            ],
+            1,
+        )
+    ]
+    current = [row for row in revisions if row["status"] == "current"]
+    retired = [row for row in revisions if row["status"] == "retired"]
+
+    def json_document(kind: str, rows: list[dict[str, Any]]) -> str:
+        return json.dumps(
+            {
+                "case_id": task_id,
+                "company": spine.company,
+                "workflow": spine.family,
+                "record_type": kind,
+                "records": rows,
+                "warning": "Correlate effective revisions and immutable provider IDs; this file does not pre-authorize a mutation.",
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+
+    def csv_document(kind: str, rows: list[dict[str, Any]]) -> str:
+        stream = io.StringIO(newline="")
+        fields = ["case_id", "record_type", "source", "revision", "effective_period", "status", "control_note"]
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({"case_id": task_id, "record_type": kind, **row})
+        return stream.getvalue()
+
+    def email_document(subject: str, rows: list[dict[str, Any]], authority: str) -> str:
+        bullets = "\n".join(
+            f"- {row['source']} revision {row['revision']} ({row['status']}): {row['control_note']}"
+            for row in rows
+        )
+        return (
+            f"From: revenue-controls@{task_number:03d}.example\n"
+            f"To: {spine.requester.replace(' ', '.').casefold()}@{task_number:03d}.example\n"
+            "Date: Wed, 26 Aug 2026 12:00:00 -0700\n"
+            f"Subject: {subject} — {task_id}\n"
+            "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n"
+            f"Case: {task_id}\nCompany: {spine.company}\nAuthority: {authority}\n\n"
+            f"{bullets}\n\nDo not infer a supported record change from this thread alone.\n"
+        )
+
+    current_markdown = "\n".join(
+        [
+            f"# Current authority register — {task_id}",
+            "",
+            f"Case: {task_id}",
+            f"Company: {spine.company}",
+            f"Review period: {spine.period}",
+            "",
+            "These controls are effective for the requested review. Resolve immutable IDs across systems, compare current revisions, preserve ambiguous records, and read persisted state after every authorized write.",
+            "",
+            *[f"## {row['source']} {row['revision']}\n\n{row['control_note']}" for row in current],
+        ]
+    ) + "\n"
+    retired_markdown = "\n".join(
+        [
+            f"# Retired authority register — {task_id}",
+            "",
+            f"Case: {task_id}",
+            f"Company: {spine.company}",
+            f"Requested review period: {spine.period}",
+            "Status: superseded; retained only to explain historical conflicts.",
+            "",
+            "Use this register only to understand why older exports, messages, or display names may disagree with the current systems. Every historical assertion must be correlated to an immutable provider ID and then checked against the effective-period authority before it can influence the review.",
+            "",
+            *[f"## {row['source']} {row['revision']}\n\n{row['control_note']}" for row in retired],
+            "",
+            "A retired control may be cited as conflict context but cannot authorize a current-period transition. Never use this appendix by itself to select an option, change CRM state, infer approval, or overwrite a current owner. If current evidence remains ambiguous, preserve the live record and identify the conflict in the handoff.",
+        ]
+    ) + "\n"
+    audit_log = "\n".join(
+        f"2026-08-26T{index:02d}:00:00Z case={task_id} source={row['source']} revision={row['revision']} status={row['status']} event=metadata-indexed note={row['control_note']}"
+        for index, row in enumerate(revisions)
+    ) + "\n"
+    evidence_yaml = "\n".join(
+        [f"case_id: {task_id}", f"company: {json.dumps(spine.company)}", "sources:"]
+        + [
+            f"  - name: {row['source']}\n    revision: {row['revision']}\n    status: {row['status']}\n    effective_period: {row['effective_period']}\n    note: {json.dumps(row['control_note'])}"
+            for row in revisions
+        ]
+    ) + "\n"
+    current_pdf_lines = [
+        f"Case {task_id} | {spine.company} | {spine.period}",
+        "Effective control: correlate immutable CRM IDs and effective revisions before acting.",
+        "Live provider reads and task evidence must precede every authorized state change.",
+        "Ambiguous or conflicting records remain unchanged and are named in the handoff.",
+        "Each write is task-scoped, performed once, and followed by an exact persisted readback.",
+        "Gong remains read-only; private call content is never copied to another system.",
+        "The result brief cites controlling and corroborating sources without exposing private content.",
+        *[f"CURRENT {row['source']} {row['revision']}: {row['control_note']}" for row in current],
+    ]
+    retired_pdf_lines = [
+        f"Case {task_id} | superseded control appendix",
+        "This revision expired before the requested review period and cannot authorize work.",
+        "Historical records may explain a mismatch but must be checked against current authority.",
+        "Names, stages, filenames, or seller assertions alone are insufficient identity evidence.",
+        *[f"RETIRED {row['source']} {row['revision']}: {row['control_note']}" for row in retired],
+        "Escalate a control conflict rather than combining current and retired rules.",
+    ]
+    workbook_rows = [
+        {
+            "source": row["source"],
+            "revision": row["revision"],
+            "period": row["effective_period"],
+            "status": row["status"],
+            "owner": spine.requester,
+            "case_id": task_id,
+        }
+        for row in revisions
+    ]
+    return {
+        "13_controls/current-revenue-control.pdf": _pdf_bytes(
+            "Current revenue operations control", current_pdf_lines
+        ),
+        "13_controls/retired-revenue-control.pdf": _pdf_bytes(
+            "Retired revenue operations control", retired_pdf_lines
+        ),
+        "14_workbooks/source-revision-matrix.xlsx": _xlsx_bytes(
+            {"Source revisions": workbook_rows, "Control notes": revisions}
+        ),
+        "14_workbooks/review-capacity.xlsx": _xlsx_bytes(
+            {"Review calendar": list(reversed(workbook_rows)), "Authority": current}
+        ),
+        "15_collaboration/operations-slack-thread.json": json_document("operations_slack_thread", revisions),
+        "15_collaboration/revenue-slack-thread.json": json_document("revenue_slack_thread", list(reversed(revisions))),
+        "16_approvals/drive-approval-record.json": json_document("drive_approval_record", current),
+        "16_approvals/drive-source-index.json": json_document("drive_source_index", revisions),
+        "17_communications/source-request.eml": email_document("Current review request", current, "current"),
+        "17_communications/former-owner-suggestion.eml": email_document("Former owner suggestion", retired, "retired"),
+        "18_lineage/record-lineage.csv": csv_document("record_lineage", revisions),
+        "18_lineage/cross-system-register.csv": csv_document("cross_system_register", list(reversed(revisions))),
+        "19_controls/current-authority.md": current_markdown,
+        "19_controls/retired-authority.md": retired_markdown,
+        "20_audit/system-audit.log": audit_log,
+        "20_audit/evidence-status.yaml": evidence_yaml,
+    }
 
 
 def stable_seed(value: str) -> int:
@@ -1774,10 +2043,10 @@ def build_documents(
     task_number: int,
     entities: list[dict[str, Any]],
     changes: list[dict[str, Any]],
-) -> tuple[dict[str, str], dict[str, list[str]]]:
+) -> tuple[dict[str, str | bytes], dict[str, list[str]]]:
     changes_by_key = {change["portfolio_key"]: change for change in changes}
     folders = list(FAMILY_SETTINGS[spine.family]["folders"])
-    documents: dict[str, str] = {}
+    documents: dict[str, str | bytes] = {}
     paths_by_key_and_role: dict[str, dict[str, str]] = {
         entity["portfolio_key"]: {} for entity in entities
     }
@@ -1815,6 +2084,7 @@ def build_documents(
             paths_by_key_and_role[entity["portfolio_key"]][role] = str(
                 PurePosixPath("/workspace/documents") / relative
             )
+    documents.update(_supplemental_documents(spine, task_id, task_number))
     if len(documents) != DOCUMENT_COUNT:
         raise ValueError(f"expected {DOCUMENT_COUNT} documents, got {len(documents)}")
     paths_by_key = {
@@ -2060,9 +2330,11 @@ def _reference_calls(
     metadata_by_folder = {
         PurePosixPath(path).parts[-2]: path for path in metadata_paths
     }
+    evidence_folders = set(paths_by_folder) | set(metadata_by_folder)
+    folders.extend(sorted(evidence_folders - set(folders)))
     calls: list[dict[str, Any]] = [*orientation, *system_discovery]
     for folder in folders:
-        paths = sorted(paths_by_folder[folder])
+        paths = sorted(paths_by_folder.get(folder, []))
         calls.extend(
             {"server": "filesystem", "name": "read_text_file", "arguments": {"path": path}}
             for path in paths
@@ -2574,7 +2846,7 @@ def build_prompt(
     spine: TaskSpine,
     task_id: str,
     task_number: int,
-    documents: dict[str, str],
+    documents: dict[str, str | bytes],
 ) -> str:
     frames = (
         (
@@ -2671,15 +2943,33 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             ),
         }
     seed = build_seed(spine, task_number, entities)
-    document_paths = [
+    all_document_paths = [
         str(PurePosixPath("/workspace/documents") / relative)
         for relative in sorted(documents)
     ]
-    first_by_folder = document_paths[:METADATA_CHECK_COUNT]
+    required_document_paths = [
+        str(PurePosixPath("/workspace/documents") / relative)
+        for relative, content in sorted(documents.items())
+        if isinstance(content, str)
+    ]
+    if len(required_document_paths) != REQUIRED_TEXT_DOCUMENT_COUNT:
+        raise ValueError(
+            f"expected {REQUIRED_TEXT_DOCUMENT_COUNT} readable evidence files, "
+            f"got {len(required_document_paths)}"
+        )
+    binary_document_paths = [
+        str(PurePosixPath("/workspace/documents") / relative)
+        for relative, content in sorted(documents.items())
+        if isinstance(content, bytes)
+    ]
+    metadata_by_folder: dict[str, str] = {}
+    for path in [*binary_document_paths, *required_document_paths]:
+        metadata_by_folder.setdefault(PurePosixPath(path).parts[-2], path)
+    first_by_folder = list(metadata_by_folder.values())[:METADATA_CHECK_COUNT]
     if len(first_by_folder) != METADATA_CHECK_COUNT:
         raise ValueError(f"expected {METADATA_CHECK_COUNT} metadata paths, got {len(first_by_folder)}")
     calls = _reference_calls(
-        spine, task_number, entities, changes, document_paths, first_by_folder
+        spine, task_number, entities, changes, required_document_paths, first_by_folder
     )
     holds = _build_holds(task_number, entities, changes, paths_by_key)
     changes_payload, brief_text = _reference_outputs(
@@ -2720,7 +3010,8 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         "requester": spine.requester,
         "as_of": _as_of(task_number),
         "fixed_file_timestamp": FIXED_FILE_TIMESTAMP,
-        "required_document_paths": document_paths,
+        "agent_visible_document_paths": all_document_paths,
+        "required_document_paths": required_document_paths,
         "metadata_check_paths": first_by_folder,
         "reference_tool_calls": len(calls),
         "required_servers": ["filesystem", "salesforce", "hubspot", "gong"],

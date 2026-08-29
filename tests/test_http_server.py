@@ -25,7 +25,10 @@ class HTTPServerTests(unittest.TestCase):
             for relative, content in task.documents.items():
                 target = documents / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                if isinstance(content, bytes):
+                    target.write_bytes(content)
+                else:
+                    target.write_text(content, encoding="utf-8")
             spec = root / "spec.json"
             seed = root / "seed.json"
             spec.write_text(json.dumps(task.spec), encoding="utf-8")
