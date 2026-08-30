@@ -255,6 +255,32 @@ HOLD_FIELDS = (
     "required_next_step",
 )
 
+TOP_LEVEL_FIELDS = ("schema_version", "task_id", "title", "company", "as_of")
+
+
+def decision_model_leaves(model: Any, prefix: str = "") -> list[tuple[str, Any]]:
+    """Flatten the graded decision model into dotted leaf paths.
+
+    Dictionaries recurse; every other value (scalars and lists of scalars)
+    is one exact-equality criterion.
+    """
+
+    if isinstance(model, dict):
+        leaves: list[tuple[str, Any]] = []
+        for key, child in model.items():
+            leaves.extend(decision_model_leaves(child, f"{prefix}{key}."))
+        return leaves
+    return [(prefix[:-1], model)]
+
+
+def _nested_value(value: Any, path: str) -> Any:
+    current = value
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
 
 def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     expected = spec["expected_changes"]
@@ -299,6 +325,20 @@ def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     for key, expected_value in spec["expected_decision_summary"].items():
         criteria[f"decision_summary.{key}"] = (
             decision_summary.get(key) == expected_value
+        )
+    decision_model = (
+        actual.get("decision_model")
+        if isinstance(actual.get("decision_model"), dict)
+        else {}
+    )
+    for path, expected_value in decision_model_leaves(
+        spec.get("expected_decision_model", {})
+    ):
+        observed = _nested_value(decision_model, path)
+        criteria[f"decision_model.{path}"] = (
+            type(observed) is type(expected_value) and observed == expected_value
+            if isinstance(expected_value, bool)
+            else observed == expected_value
         )
     details: list[dict[str, Any]] = []
     for expected_row in expected:
@@ -370,6 +410,23 @@ def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
         anchor for anchor in decision_anchors if normalize(str(anchor)) not in normalized
     ]
     criteria["decision_and_alternatives"] = not missing_decision
+    model = spec.get("expected_decision_model", {})
+    model_anchors: list[str] = []
+    if model:
+        model_anchors.append(str(model["business_need_date"]))
+        model_anchors.append(str(model["decision_timing_status"]))
+        for option in model.get("options", {}).values():
+            model_anchors.extend(
+                [
+                    str(option["outcome"]),
+                    f"USD {int(option['incremental_cost']):,}",
+                    str(option["approval"]),
+                ]
+            )
+    missing_model = [
+        anchor for anchor in model_anchors if normalize(anchor) not in normalized
+    ]
+    criteria["alternatives_costed_and_dated"] = bool(model) and not missing_model
     hold_details: list[dict[str, Any]] = []
     for hold in spec["expected_holds"]:
         anchors = [
@@ -401,6 +458,183 @@ def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+MILESTONE_IDS = (
+    "investigation.scope",
+    "investigation.evidence",
+    "investigation.identity",
+    "investigation.authority",
+    "investigation.provider_correlation",
+    "decision.portfolio",
+    "decision.alternatives",
+    "state.primary",
+    "verification.readback",
+    "containment.scope",
+    "deliverable.decision_summary",
+    "deliverable.changes",
+    "deliverable.holds",
+    "deliverable.brief",
+    "execution.delivery",
+)
+
+PROCEDURE_MILESTONES = {
+    "filesystem_discovery_completed": "investigation.scope",
+    "custody_metadata_checked": "investigation.scope",
+    "salesforce_discovery_completed": "investigation.scope",
+    "hubspot_discovery_completed": "investigation.scope",
+    "material_evidence_read_in_full": "investigation.evidence",
+    "all_required_evidence_precedes_mutation": "investigation.evidence",
+    "task_specific_investigation_completed": "investigation.identity",
+    "all_salesforce_evidence_queried": "investigation.provider_correlation",
+    "all_hubspot_evidence_retrieved": "investigation.provider_correlation",
+    "all_gong_evidence_queried": "investigation.provider_correlation",
+    "all_provider_evidence_precedes_mutation": "investigation.provider_correlation",
+    "all_mutations_verified_by_readback": "verification.readback",
+    "exact_deliverable_set": "execution.delivery",
+    "deliverables_written_through_mcp": "execution.delivery",
+    "no_rejected_mutation": "execution.delivery",
+}
+
+STATE_GLOBAL_CRITERIA = (
+    "entire_business_state_exact",
+    "no_delete_tool_succeeded",
+    "gong_remained_read_only",
+)
+
+CHANGE_AUTHORITY_FIELDS = {
+    "reason",
+    "primary_source",
+    "corroborating_source",
+    "gong_evidence_id",
+    "owner",
+    "deadline",
+    "evidence_sources",
+}
+CHANGE_DECISION_FIELDS = {
+    "decision_method",
+    "decision_inputs",
+    "decision_explanation",
+    "selected_option_id",
+}
+HOLD_AUTHORITY_FIELDS = {"blocking_condition", "primary_source", "corroborating_source"}
+
+
+def milestone_for(component: str, criterion_id: str) -> str:
+    """Map one atomic verifier criterion to its semantic milestone.
+
+    The same mapping publishes the atomic rubric at build time and rolls the
+    executed criteria into weighted milestones at verification time.
+    """
+
+    if component == "procedure":
+        try:
+            return PROCEDURE_MILESTONES[criterion_id]
+        except KeyError as exc:
+            raise ValueError(f"unmapped procedure criterion: {criterion_id}") from exc
+    if component == "state":
+        if criterion_id.endswith(".initial_value"):
+            return "investigation.provider_correlation"
+        if criterion_id.endswith(
+            (".target_value", ".authorized_fields", ".exactly_one_authorized_call")
+        ):
+            return "state.primary"
+        if criterion_id.endswith(".postwrite_readback"):
+            return "verification.readback"
+        if criterion_id in STATE_GLOBAL_CRITERIA:
+            return "containment.scope"
+        raise ValueError(f"unmapped state criterion: {criterion_id}")
+    if component == "changes":
+        if criterion_id == "changes_is_object" or criterion_id.startswith("top_level."):
+            return "deliverable.decision_summary"
+        if criterion_id in {"changes_exact_count", "change_ids_unique"}:
+            return "deliverable.changes"
+        if criterion_id in {"holds_exact_count", "hold_ids_unique"}:
+            return "deliverable.holds"
+        if criterion_id.startswith("decision_summary."):
+            return "decision.portfolio"
+        if criterion_id.startswith("decision_model."):
+            return "decision.alternatives"
+        if criterion_id.startswith("CHG-"):
+            field = criterion_id.rsplit(".", 1)[-1]
+            if field in CHANGE_AUTHORITY_FIELDS:
+                return "investigation.authority"
+            if field in CHANGE_DECISION_FIELDS:
+                return "decision.portfolio"
+            return "deliverable.changes"
+        if criterion_id.startswith("HLD-"):
+            field = criterion_id.rsplit(".", 1)[-1]
+            return (
+                "investigation.authority"
+                if field in HOLD_AUTHORITY_FIELDS
+                else "deliverable.holds"
+            )
+        raise ValueError(f"unmapped changes criterion: {criterion_id}")
+    if component == "brief":
+        if criterion_id == "decision_and_alternatives":
+            return "decision.portfolio"
+        if criterion_id == "alternatives_costed_and_dated":
+            return "decision.alternatives"
+        if criterion_id == "forbidden_claims_absent":
+            return "containment.scope"
+        return "deliverable.brief"
+    raise ValueError(f"unknown verifier component: {component}")
+
+
+def criterion_catalog(spec: dict[str, Any]) -> list[tuple[str, str]]:
+    """Enumerate every atomic criterion the verifier produces for a task.
+
+    The order mirrors the verifier components so the published rubric and the
+    executed report agree criterion for criterion.
+    """
+
+    catalog: list[tuple[str, str]] = [
+        ("procedure", criterion_id) for criterion_id in PROCEDURE_MILESTONES
+    ]
+    for change in spec["expected_changes"]:
+        catalog.extend(
+            ("state", f"{change['id']}.{suffix}")
+            for suffix in (
+                "initial_value",
+                "target_value",
+                "authorized_fields",
+                "exactly_one_authorized_call",
+                "postwrite_readback",
+            )
+        )
+    catalog.extend(("state", criterion_id) for criterion_id in STATE_GLOBAL_CRITERIA)
+    catalog.extend(
+        ("changes", criterion_id)
+        for criterion_id in (
+            "changes_is_object",
+            "changes_exact_count",
+            "change_ids_unique",
+            "holds_exact_count",
+            "hold_ids_unique",
+        )
+    )
+    catalog.extend(("changes", f"top_level.{field}") for field in TOP_LEVEL_FIELDS)
+    catalog.extend(
+        ("changes", f"decision_summary.{key}")
+        for key in spec["expected_decision_summary"]
+    )
+    catalog.extend(
+        ("changes", f"decision_model.{path}")
+        for path, _ in decision_model_leaves(spec.get("expected_decision_model", {}))
+    )
+    for change in spec["expected_changes"]:
+        catalog.append(("changes", f"{change['id']}.present"))
+        catalog.extend(("changes", f"{change['id']}.{field}") for field in CHANGE_FIELDS)
+    for hold in spec["expected_holds"]:
+        catalog.append(("changes", f"{hold['id']}.present"))
+        catalog.extend(("changes", f"{hold['id']}.{field}") for field in HOLD_FIELDS)
+    catalog.extend(("brief", f"section.{section}") for section in spec["brief_sections"])
+    catalog.extend(("brief", f"change.{change['id']}") for change in spec["expected_changes"])
+    catalog.append(("brief", "decision_and_alternatives"))
+    catalog.append(("brief", "alternatives_costed_and_dated"))
+    catalog.extend(("brief", f"hold.{hold['id']}") for hold in spec["expected_holds"])
+    catalog.append(("brief", "forbidden_claims_absent"))
+    return catalog
+
+
 def semantic_checks(
     procedure: dict[str, bool],
     state: dict[str, Any],
@@ -415,125 +649,14 @@ def semantic_checks(
         "brief": brief["criteria"],
     }
     groups: dict[str, list[tuple[str, str]]] = {
-        criterion["id"]: [] for criterion in spec["rubric_criteria"]
+        milestone["id"]: [] for milestone in spec["rubric_milestones"]
     }
-
-    def assign(milestone_id: str, component: str, criterion_id: str) -> None:
-        if milestone_id not in groups:
-            raise ValueError(f"unknown semantic milestone: {milestone_id}")
-        groups[milestone_id].append((component, criterion_id))
-
-    for criterion_id in (
-        "filesystem_discovery_completed",
-        "custody_metadata_checked",
-        "salesforce_discovery_completed",
-        "hubspot_discovery_completed",
-    ):
-        assign("investigation.scope", "procedure", criterion_id)
-    for criterion_id in (
-        "material_evidence_read_in_full",
-        "all_required_evidence_precedes_mutation",
-    ):
-        assign("investigation.evidence", "procedure", criterion_id)
-    assign(
-        "investigation.identity",
-        "procedure",
-        "task_specific_investigation_completed",
-    )
-    for criterion_id in (
-        "all_salesforce_evidence_queried",
-        "all_hubspot_evidence_retrieved",
-        "all_gong_evidence_queried",
-        "all_provider_evidence_precedes_mutation",
-    ):
-        assign("investigation.provider_correlation", "procedure", criterion_id)
-    assign(
-        "verification.readback",
-        "procedure",
-        "all_mutations_verified_by_readback",
-    )
-    for criterion_id in (
-        "exact_deliverable_set",
-        "deliverables_written_through_mcp",
-        "no_rejected_mutation",
-    ):
-        assign("execution.delivery", "procedure", criterion_id)
-
-    for criterion_id in state["criteria"]:
-        if criterion_id.endswith(".initial_value"):
-            milestone_id = "investigation.provider_correlation"
-        elif criterion_id.endswith(
-            (".target_value", ".authorized_fields", ".exactly_one_authorized_call")
-        ):
-            milestone_id = "state.primary"
-        elif criterion_id.endswith(".postwrite_readback"):
-            milestone_id = "verification.readback"
-        elif criterion_id in {
-            "entire_business_state_exact",
-            "no_delete_tool_succeeded",
-            "gong_remained_read_only",
-        }:
-            milestone_id = "containment.scope"
-        else:
-            raise ValueError(f"unmapped state criterion: {criterion_id}")
-        assign(milestone_id, "state", criterion_id)
-
-    change_authority_fields = {
-        "reason",
-        "primary_source",
-        "corroborating_source",
-        "gong_evidence_id",
-        "owner",
-        "deadline",
-        "evidence_sources",
-    }
-    change_decision_fields = {
-        "decision_method",
-        "decision_inputs",
-        "decision_explanation",
-        "selected_option_id",
-    }
-    hold_authority_fields = {
-        "blocking_condition",
-        "primary_source",
-        "corroborating_source",
-    }
-    for criterion_id in changes["criteria"]:
-        if criterion_id == "changes_is_object" or criterion_id.startswith("top_level."):
-            milestone_id = "deliverable.decision_summary"
-        elif criterion_id in {"changes_exact_count", "change_ids_unique"}:
-            milestone_id = "deliverable.changes"
-        elif criterion_id in {"holds_exact_count", "hold_ids_unique"}:
-            milestone_id = "deliverable.holds"
-        elif criterion_id.startswith("decision_summary."):
-            milestone_id = "decision.portfolio"
-        elif criterion_id.startswith("CHG-"):
-            field = criterion_id.rsplit(".", 1)[-1]
-            if field in change_authority_fields:
-                milestone_id = "investigation.authority"
-            elif field in change_decision_fields:
-                milestone_id = "decision.portfolio"
-            else:
-                milestone_id = "deliverable.changes"
-        elif criterion_id.startswith("HLD-"):
-            field = criterion_id.rsplit(".", 1)[-1]
-            milestone_id = (
-                "investigation.authority"
-                if field in hold_authority_fields
-                else "deliverable.holds"
-            )
-        else:
-            raise ValueError(f"unmapped changes criterion: {criterion_id}")
-        assign(milestone_id, "changes", criterion_id)
-
-    for criterion_id in brief["criteria"]:
-        if criterion_id == "decision_and_alternatives":
-            milestone_id = "decision.portfolio"
-        elif criterion_id == "forbidden_claims_absent":
-            milestone_id = "containment.scope"
-        else:
-            milestone_id = "deliverable.brief"
-        assign(milestone_id, "brief", criterion_id)
+    for component, criteria in raw.items():
+        for criterion_id in criteria:
+            milestone_id = milestone_for(component, criterion_id)
+            if milestone_id not in groups:
+                raise ValueError(f"unknown semantic milestone: {milestone_id}")
+            groups[milestone_id].append((component, criterion_id))
 
     all_raw = {
         (component, criterion_id)
@@ -550,7 +673,7 @@ def semantic_checks(
             f"semantic rubric mapping mismatch; unassigned={unassigned}, unknown={unknown}"
         )
 
-    rubric_by_id = {criterion["id"]: criterion for criterion in spec["rubric_criteria"]}
+    rubric_by_id = {milestone["id"]: milestone for milestone in spec["rubric_milestones"]}
     checks: list[dict[str, Any]] = []
     for milestone_id, references in groups.items():
         if not references:

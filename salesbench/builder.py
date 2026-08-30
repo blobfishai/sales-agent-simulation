@@ -462,17 +462,19 @@ def create_task_pack(
             "authorized_mutations": len(task.spec["expected_changes"]),
             "required_deliverables": ["changes.json", "brief.md"],
             "score_weights": {
-                criterion["id"]: criterion["weight"] / 100
-                for criterion in task.spec["rubric_criteria"]
+                milestone["id"]: milestone["weight"] / 100
+                for milestone in task.spec["rubric_milestones"]
             },
-            "gates": [criterion["id"] for criterion in task.spec["rubric_criteria"]],
+            "gates": [milestone["id"] for milestone in task.spec["rubric_milestones"]],
             "call_order_policy": (
                 "The reference trajectory is illustrative, not graded. Material identity, "
-                "authority, provider, and exception evidence must precede the dependent CRM "
-                "mutation; valid query shapes and the order of independent investigations are open."
+                "authority, provider, calendar, and exception evidence must precede the dependent "
+                "CRM mutation; valid query shapes and the order of independent investigations are open."
             ),
+            "milestones": task.spec["rubric_milestones"],
             "criteria": task.spec["rubric_criteria"],
             "decision_options": task.spec["decision_options"],
+            "decision_calendar": task.spec["decision_calendar"],
         },
         "gold_output": {
             "changes": task.reference["changes"],
@@ -708,7 +710,7 @@ configs:
 
 # {RELEASE_NAME}
 
-{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 28 independently inspectable assets across 11 native formats; 10–12 task-specific records are causally material and the remainder provide realistic corroboration, decoys, lineage, and surrounding context. The evidence—not a fixed mutation quota—determines 5–12 authorized CRM mutations and 68–103 reference calls, including a same-record post-write readback for every mutation.
+{RELEASE_NAME} is a synthetic long-horizon sales-agent benchmark with 100 original workflows across Salesforce, HubSpot, Gong, and a seeded evidence room. Each task begins with a high-level employee request and has its own authored causal rule and provider transition. Identity, operating facts, authority, governed policy, live-system indexes, and exceptions are separated so no mounted business asset publishes a selected option or precomputed change. Every task has 28 independently inspectable assets across 11 native formats; 16–18 task-specific records are causally material and the remainder provide realistic corroboration, decoys, lineage, and surrounding context. The evidence—not a fixed mutation quota—determines 5–12 authorized CRM mutations and 68–114 reference calls, including a same-record post-write readback for every mutation. Every task also grades a decision model: three alternatives (standard queue, expedited exception queue, full hold) each carrying an outcome date derived across the business-day calendar, a whole-USD incremental cost, and an authority status, compared with a review meeting date documented in two independent sources into a signed variance and an ON_TIME/LATE status.
 
 ## Public release
 
@@ -735,17 +737,20 @@ configs:
 | Workflow families | 10 |
 | Agent-visible assets per task | 28 across 11 native formats |
 | Authorized mutations per task | 5–12; at least six distinct workload sizes |
-| Reference MCP calls per task | 68–103 |
+| Reference MCP calls per task | 75–114 |
 | Unique tool-name sequences | 100/100 |
 | Unique semantic action graphs | 100/100 |
 | Authored causal decision rules | 100/100 unique |
-| Task-specific semantic milestones | 14 totaling 100 points; atomic evidence remains deterministic |
-| Precomputed answer objects in business evidence | 0 |
+| Task-specific semantic milestones | 15 totaling 100 points; every atomic criterion is published with its milestone |
+| Costed, dated, authority-tagged alternatives | 3 per task; one APPROVED, one ADDITIONAL_APPROVAL_REQUIRED, one AVAILABLE_NOT_RECOMMENDED |
+| Business-need date documented outside the request | 2 independent sources per task; absent from every prompt |
+| Approval-pending and superseded-period holds | at least one of each per task |
+| Precomputed answer objects or option outcomes in business evidence | 0 |
 | Material evidence and provider reads before mutation | required; independent order and valid query shapes are open |
 | Same-record post-write readback per mutation | required |
 | Verifier network/model/clock/random calls | 0 |
 | Oracle and replay passes | 100/100 each |
-| False accepts across ten negative controls | 0 |
+| False accepts across eleven negative controls | 0 |
 | Reward for the pristine no-op control | exactly 0.0 |
 
 Measured results live in `reports/qualification.json`. Reference traces are implementation proofs, not model scores.
@@ -831,6 +836,14 @@ def _validate_report(report: dict[str, Any]) -> None:
         "no_amount_result_leak": not report["causal_evidence"]["derived_amount_leaks"],
         "asset_formats_parse": not report["asset_format_validation"]["invalid_assets"],
         "required_servers": report["required_mcp_servers"] == ["filesystem", "gong", "hubspot", "salesforce"],
+        "decision_model_alternatives": report["decision_model"]["tasks_with_three_costed_dated_alternatives"] == 100,
+        "decision_model_authority_mix": report["decision_model"]["tasks_with_unauthorized_and_inferior_alternatives"] == 100,
+        "decision_model_business_need_documented": report["decision_model"]["tasks_with_business_need_date_in_two_sources"] == 100,
+        "decision_model_business_need_not_in_prompt": report["decision_model"]["tasks_with_business_need_date_in_prompt"] == 0,
+        "decision_model_no_outcome_leak": not report["decision_model"]["option_outcome_leaks"],
+        "approval_pending_hold_every_task": report["decision_model"]["tasks_with_approval_pending_hold"] == 100,
+        "control_window_hold_every_task": report["decision_model"]["tasks_with_outside_current_period_hold"] == 100,
+        "milestones_total_100": report["milestones_per_task"] == 15,
     }
     rejected = [name for name, passed in failures.items() if not passed]
     if rejected:
@@ -977,6 +990,16 @@ def build(output: Path) -> dict[str, Any]:
     decision_rule_signatures: set[tuple[str, str, str]] = set()
     evidence_role_coverage = True
     portfolio_partition_complete = True
+    milestone_counts: set[int] = set()
+    timing_counts: Counter[str] = Counter()
+    escalation_recommended = 0
+    tasks_with_alternatives = 0
+    tasks_with_authority_mix = 0
+    tasks_with_need_date_documented = 0
+    tasks_with_need_date_in_prompt = 0
+    tasks_with_approval_hold = 0
+    tasks_with_window_hold = 0
+    option_outcome_leaks: list[dict[str, str]] = []
     forbidden_answer_keys = (
         '"decision"',
         '"eligible_for_requested_workflow"',
@@ -984,9 +1007,59 @@ def build(output: Path) -> dict[str, Any]:
         '"authorized_record_id"',
         '"authorized_field"',
         '"required_value"',
+        '"business_need_date":',
+        '"recommended_outcome_date":',
+        '"outcome_vs_control_days":',
+        '"decision_timing_status":',
+        '"incremental_cost":',
+        '"expedite_days_saved":',
+        '"escalation_recommended":',
     )
 
     for task in tasks:
+        model = task.spec["expected_decision_model"]
+        options = task.spec["decision_options"]
+        milestone_counts.add(len(task.spec["rubric_milestones"]))
+        timing_counts[model["decision_timing_status"]] += 1
+        escalation_recommended += int(model["escalation_recommended"])
+        tasks_with_alternatives += int(
+            len(options) == 3
+            and all(
+                option.get("outcome")
+                and isinstance(option.get("incremental_cost"), int)
+                and option.get("approval")
+                and option.get("control_status")
+                for option in options
+            )
+            and sum(bool(option.get("recommended")) for option in options) == 1
+        )
+        approvals = {option.get("approval") for option in options}
+        tasks_with_authority_mix += int(
+            "ADDITIONAL_APPROVAL_REQUIRED" in approvals
+            and bool(
+                approvals & {"AVAILABLE_NOT_RECOMMENDED", "NOT_SUPPORTED_BY_CURRENT_EVIDENCE"}
+            )
+        )
+        text_documents = {
+            relative: content
+            for relative, content in task.documents.items()
+            if isinstance(content, str)
+        }
+        tasks_with_need_date_documented += int(
+            sum(model["business_need_date"] in content for content in text_documents.values()) >= 2
+        )
+        tasks_with_need_date_in_prompt += int(model["business_need_date"] in task.prompt)
+        blocking = {hold["blocking_condition"] for hold in task.spec["expected_holds"]}
+        tasks_with_approval_hold += int("approval_pending" in blocking)
+        tasks_with_window_hold += int("outside_current_period" in blocking)
+        for option in options:
+            labelled_outcome = f"\"outcome\": \"{option['outcome']}\""
+            labelled_cost = f"\"incremental_cost\": {option['incremental_cost']}"
+            for relative, content in text_documents.items():
+                if labelled_outcome in content or labelled_cost in content:
+                    option_outcome_leaks.append(
+                        {"task_id": task.task_id, "path": relative, "option_id": option["id"]}
+                    )
         record, index_entry = create_task_pack(tasks_root, hf_root, task)
         records.append(record)
         index.append(index_entry)
@@ -1165,6 +1238,21 @@ def build(output: Path) -> dict[str, Any]:
         "criteria_per_task": {
             "minimum": min(criterion_counts),
             "maximum": max(criterion_counts),
+        },
+        "milestones_per_task": (
+            milestone_counts.pop() if len(milestone_counts) == 1 else sorted(milestone_counts)
+        ),
+        "decision_model": {
+            "alternatives_per_task": 3,
+            "tasks_with_three_costed_dated_alternatives": tasks_with_alternatives,
+            "tasks_with_unauthorized_and_inferior_alternatives": tasks_with_authority_mix,
+            "tasks_with_business_need_date_in_two_sources": tasks_with_need_date_documented,
+            "tasks_with_business_need_date_in_prompt": tasks_with_need_date_in_prompt,
+            "tasks_with_approval_pending_hold": tasks_with_approval_hold,
+            "tasks_with_outside_current_period_hold": tasks_with_window_hold,
+            "recommended_timing_status": dict(sorted(timing_counts.items())),
+            "tasks_recommending_escalation": escalation_recommended,
+            "option_outcome_leaks": option_outcome_leaks,
         },
         "causal_evidence": {
             "evidence_roles": list(EVIDENCE_ROLES),

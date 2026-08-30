@@ -149,15 +149,19 @@ def export(release: Path, output: Path) -> dict[str, Any]:
                 ],
                 "assets": asset_rows(task),
                 "options": task.spec["decision_options"],
+                "decisionModel": task.spec["expected_decision_model"],
+                "decisionCalendar": task.spec["decision_calendar"],
                 "gradedCriteria": [
-                    criterion["description"] for criterion in task.spec["rubric_criteria"]
+                    milestone["description"] for milestone in task.spec["rubric_milestones"]
                 ],
-                "criterionWeights": task.spec["rubric_criteria"],
+                "criterionWeights": task.spec["rubric_milestones"],
+                "atomicCriteria": task.spec["rubric_criteria"],
                 "scoring": {
-                    "criteriaPerTask": len(task.spec["rubric_criteria"]),
+                    "criteriaPerTask": len(task.spec["rubric_milestones"]),
+                    "atomicCriteriaPerTask": len(task.spec["rubric_criteria"]),
                     "totalWeight": sum(
-                        criterion["weight"]
-                        for criterion in task.spec["rubric_criteria"]
+                        milestone["weight"]
+                        for milestone in task.spec["rubric_milestones"]
                     ),
                     "fullPassRequiresEveryCriterion": True,
                 },
@@ -230,7 +234,9 @@ def export(release: Path, output: Path) -> dict[str, Any]:
             "referenceCallRange": build["reference_tool_calls_per_task"],
             "mutationsPerTask": build["authorized_mutations_per_task"]["maximum"],
             "mutationRange": build["authorized_mutations_per_task"],
-            "criteriaPerTask": 14,
+            "criteriaPerTask": build["milestones_per_task"],
+            "atomicCriteriaPerTask": build["criteria_per_task"],
+            "decisionModel": build["decision_model"],
             "deterministicVerifier": True,
             "exactDuplicateDocuments": build["exact_duplicate_documents"],
             "minimumDocumentBytes": build["minimum_document_bytes"],
