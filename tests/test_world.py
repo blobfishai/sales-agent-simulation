@@ -52,13 +52,79 @@ class WorldTests(unittest.TestCase):
             reports.append(world.verify(verification_token(self.task.task_id)))
         self.assertTrue(reports[0]["passed"])
         self.assertEqual(reports[0]["reward"], 1.0)
-        self.assertEqual(len(reports[0]["semantic_checks"]), 14)
+        self.assertEqual(len(reports[0]["semantic_checks"]), 15)
         self.assertEqual(
             sum(check["weight"] for check in reports[0]["semantic_checks"]),
             100.0,
         )
         self.assertTrue(all(check["passed"] for check in reports[0]["semantic_checks"]))
         self.assertEqual(reports[0], reports[1])
+        executed = {
+            f"{component}.{criterion_id}"
+            for component in ("procedure", "state", "changes", "brief")
+            for criterion_id in (
+                reports[0]["criteria"][component]
+                if component == "procedure"
+                else reports[0]["criteria"][component]["criteria"]
+            )
+        }
+        self.assertEqual(
+            executed, {row["id"] for row in self.task.spec["rubric_criteria"]}
+        )
+
+    def _run_with_changes(self, suffix: str, mutate) -> dict:
+        world = self.world(suffix)
+        for call in self.task.reference["calls"]:
+            arguments = call["arguments"]
+            if (
+                call["server"] == "filesystem"
+                and call["name"] == "write_file"
+                and arguments["path"].endswith("changes.json")
+            ):
+                payload = json.loads(arguments["content"])
+                mutate(payload)
+                arguments = {
+                    **arguments,
+                    "content": json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                }
+            result = world.call_tool(call["server"], call["name"], arguments)
+            self.assertFalse(result["isError"])
+        return world.verify(verification_token(self.task.task_id))
+
+    def test_misreported_alternative_timing_is_rejected(self) -> None:
+        def flip_timing(payload: dict) -> None:
+            model = payload["decision_model"]
+            model["decision_timing_status"] = (
+                "LATE" if model["decision_timing_status"] == "ON_TIME" else "ON_TIME"
+            )
+
+        report = self._run_with_changes("wrong-timing", flip_timing)
+        self.assertFalse(report["passed"])
+        self.assertFalse(
+            report["criteria"]["changes"]["criteria"][
+                "decision_model.decision_timing_status"
+            ]
+        )
+        failed = [check["id"] for check in report["semantic_checks"] if not check["passed"]]
+        self.assertEqual(failed, ["decision.alternatives"])
+
+    def test_relabelled_unauthorized_alternative_is_rejected(self) -> None:
+        expedite_id = next(
+            option["id"]
+            for option in self.task.spec["decision_options"]
+            if option["approval"] == "ADDITIONAL_APPROVAL_REQUIRED"
+        )
+
+        def approve_expedite(payload: dict) -> None:
+            option = payload["decision_model"]["options"][expedite_id]
+            option["approval"] = "APPROVED"
+            option["incremental_cost"] = 0
+
+        report = self._run_with_changes("approved-expedite", approve_expedite)
+        self.assertFalse(report["passed"])
+        criteria = report["criteria"]["changes"]["criteria"]
+        self.assertFalse(criteria[f"decision_model.options.{expedite_id}.approval"])
+        self.assertFalse(criteria[f"decision_model.options.{expedite_id}.incremental_cost"])
 
     def test_reference_can_skip_surrounding_sources_and_queries(self) -> None:
         world = self.world("material-only")
@@ -99,7 +165,7 @@ class WorldTests(unittest.TestCase):
             self.assertFalse(result["isError"])
 
         report = world.verify(verification_token(self.task.task_id))
-        self.assertGreaterEqual(skipped, 15)
+        self.assertGreaterEqual(skipped, 10)
         self.assertTrue(report["passed"])
         self.assertEqual(report["reward"], 1.0)
 

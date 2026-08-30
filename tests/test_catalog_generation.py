@@ -22,6 +22,7 @@ from salesbench.builder import (
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
 from salesbench.decision_specs import DECISION_RULES
 from salesbench.generation import (
+    DECISION_CALENDAR_SOURCES,
     DOCUMENT_COUNT,
     EVIDENCE_ROLES,
     MAX_REFERENCE_TOOL_CALLS,
@@ -29,8 +30,13 @@ from salesbench.generation import (
     MIN_REFERENCE_TOOL_CALLS,
     MIN_TARGET_CHANGE_COUNT,
     FIXED_XLSX_ZIP_TIMESTAMP,
+    PORTFOLIO_ENTITY_COUNT,
+    business_days_after,
     generate_all,
 )
+from salesbench.runtime.scoring import MILESTONE_IDS
+
+from datetime import date
 
 
 class CatalogGenerationTests(unittest.TestCase):
@@ -68,19 +74,27 @@ class CatalogGenerationTests(unittest.TestCase):
             )
             self.assertEqual(len(task.spec["decision_options"]), 3)
             self.assertEqual(sum(option["selected"] for option in task.spec["decision_options"]), 1)
-            self.assertGreaterEqual(len(task.spec["required_document_paths"]), 10)
-            self.assertLessEqual(len(task.spec["required_document_paths"]), 12)
+            self.assertGreaterEqual(len(task.spec["required_document_paths"]), 16)
+            self.assertLessEqual(len(task.spec["required_document_paths"]), 18)
+            for relative in DECISION_CALENDAR_SOURCES:
+                self.assertIn(
+                    f"/workspace/documents/{relative}",
+                    task.spec["required_document_paths"],
+                )
             self.assertEqual(len(task.spec["reference_document_paths"]), 24)
             self.assertEqual(len(task.spec["metadata_check_paths"]), 4)
             self.assertEqual(len(task.spec["reference_metadata_check_paths"]), 8)
-            self.assertEqual(len(task.spec["rubric_criteria"]), 14)
+            milestones = task.spec["rubric_milestones"]
+            self.assertEqual(tuple(row["id"] for row in milestones), MILESTONE_IDS)
+            self.assertEqual(sum(row["weight"] for row in milestones), 100)
+            criteria = task.spec["rubric_criteria"]
+            self.assertGreaterEqual(len(criteria), 300)
+            self.assertEqual(len({row["id"] for row in criteria}), len(criteria))
             self.assertEqual(
-                sum(row["weight"] for row in task.spec["rubric_criteria"]),
-                100,
+                {row["milestone"] for row in criteria}, set(MILESTONE_IDS)
             )
-            self.assertEqual(
-                len({row["id"] for row in task.spec["rubric_criteria"]}),
-                len(task.spec["rubric_criteria"]),
+            self.assertTrue(
+                all(row["id"].startswith(f"{row['category']}.") for row in criteria)
             )
         mutation_counts = {
             len(task.spec["expected_changes"])
@@ -90,7 +104,7 @@ class CatalogGenerationTests(unittest.TestCase):
         self.assertEqual(
             len(
                 {
-                    tuple(row["description"] for row in task.spec["rubric_criteria"])
+                    tuple(row["description"] for row in task.spec["rubric_milestones"])
                     for task in self.tasks
                 }
             ),
@@ -302,6 +316,181 @@ class CatalogGenerationTests(unittest.TestCase):
             self.assertEqual(len(deliverable_records), 1)
             self.assertTrue(all("workflow_contract" in content for content in deliverable_records))
 
+    def test_every_task_grades_three_costed_dated_authority_tagged_alternatives(self) -> None:
+        for task in self.tasks:
+            options = task.spec["decision_options"]
+            model = task.spec["expected_decision_model"]
+            criteria_ids = {row["id"] for row in task.spec["rubric_criteria"]}
+            self.assertEqual(len(options), 3)
+            self.assertEqual(sum(option["recommended"] for option in options), 1)
+            approvals = [option["approval"] for option in options]
+            self.assertIn("ADDITIONAL_APPROVAL_REQUIRED", approvals)
+            self.assertIn("AVAILABLE_NOT_RECOMMENDED", approvals)
+            recommended = next(option for option in options if option["recommended"])
+            self.assertEqual(recommended["approval"], "APPROVED")
+            self.assertEqual(recommended["outcome"], model["recommended_outcome_date"])
+            for option in options:
+                date.fromisoformat(option["outcome"])
+                self.assertIsInstance(option["incremental_cost"], int)
+                self.assertTrue(option["control_status"])
+                self.assertIn(option["timing_status"], {"ON_TIME", "LATE"})
+                graded = model["options"][option["id"]]
+                for field in (
+                    "outcome",
+                    "incremental_cost",
+                    "approval",
+                    "control_status",
+                    "outcome_vs_control_days",
+                    "timing_status",
+                ):
+                    self.assertEqual(graded[field], option[field])
+                    self.assertIn(
+                        f"changes.decision_model.options.{option['id']}.{field}",
+                        criteria_ids,
+                    )
+            for field in (
+                "business_need_date",
+                "outcome_vs_control_days",
+                "decision_timing_status",
+                "recommended_outcome_date",
+                "recommended_incremental_cost_usd",
+                "escalation_recommended",
+            ):
+                self.assertIn(f"changes.decision_model.{field}", criteria_ids)
+            self.assertIn("brief.alternatives_costed_and_dated", criteria_ids)
+
+    def test_decision_model_is_reconstructible_from_the_documented_calendar(self) -> None:
+        late_tasks = 0
+        for task in self.tasks:
+            model = task.spec["expected_decision_model"]
+            calendar = task.spec["decision_calendar"]
+            as_of = date.fromisoformat(task.spec["as_of"])
+            self.assertEqual(calendar["as_of"], task.spec["as_of"])
+            blackouts = frozenset(
+                date.fromisoformat(value) for value in model["operations_blackout_dates"]
+            )
+            review = date.fromisoformat(model["business_need_date"])
+            self.assertGreater(review, as_of)
+            self.assertLess(review.weekday(), 5)
+            self.assertNotIn(review, blackouts)
+            supported = task.spec["expected_change_count"]
+            rate = model["standard_queue_records_per_business_day"]
+            standard_days = -(-supported // rate)
+            self.assertEqual(model["standard_processing_business_days"], standard_days)
+            standard = business_days_after(as_of, standard_days, blackouts)
+            expedited = business_days_after(
+                as_of,
+                -(-supported // model["expedited_queue_records_per_business_day"]),
+                blackouts,
+            )
+            refresh = date.fromisoformat(model["next_full_register_refresh"])
+            self.assertGreater(refresh, review)
+            hold = business_days_after(
+                refresh, -(-PORTFOLIO_ENTITY_COUNT // rate), blackouts
+            )
+            by_approval = {
+                option["approval"]: option for option in model["options"].values()
+            }
+            self.assertEqual(by_approval["APPROVED"]["outcome"], standard.isoformat())
+            self.assertEqual(by_approval["APPROVED"]["incremental_cost"], 0)
+            self.assertEqual(
+                by_approval["ADDITIONAL_APPROVAL_REQUIRED"]["outcome"],
+                expedited.isoformat(),
+            )
+            self.assertEqual(
+                by_approval["ADDITIONAL_APPROVAL_REQUIRED"]["incremental_cost"],
+                supported * model["expedite_fee_usd_per_record"],
+            )
+            self.assertEqual(
+                by_approval["AVAILABLE_NOT_RECOMMENDED"]["outcome"], hold.isoformat()
+            )
+            self.assertEqual(
+                by_approval["AVAILABLE_NOT_RECOMMENDED"]["incremental_cost"],
+                PORTFOLIO_ENTITY_COUNT * model["rereview_cost_usd_per_record"],
+            )
+            self.assertEqual(
+                by_approval["AVAILABLE_NOT_RECOMMENDED"]["timing_status"], "LATE"
+            )
+            for option in model["options"].values():
+                outcome = date.fromisoformat(option["outcome"])
+                self.assertEqual(
+                    option["outcome_vs_control_days"], (outcome - review).days
+                )
+                self.assertEqual(
+                    option["timing_status"], "ON_TIME" if outcome <= review else "LATE"
+                )
+            self.assertEqual(model["outcome_vs_control_days"], (standard - review).days)
+            self.assertEqual(
+                model["decision_timing_status"],
+                "ON_TIME" if standard <= review else "LATE",
+            )
+            self.assertEqual(
+                model["escalation_recommended"], model["decision_timing_status"] == "LATE"
+            )
+            self.assertEqual(model["expedite_days_saved"], (standard - expedited).days)
+            self.assertGreaterEqual(model["expedite_days_saved"], 1)
+            late_tasks += model["decision_timing_status"] == "LATE"
+        self.assertGreater(late_tasks, 0)
+        self.assertLess(late_tasks, 50)
+
+    def test_business_need_date_and_calendar_inputs_are_split_across_sources(self) -> None:
+        for task in self.tasks:
+            model = task.spec["expected_decision_model"]
+            calendar = task.spec["decision_calendar"]
+            text_documents = {
+                relative: content
+                for relative, content in task.documents.items()
+                if isinstance(content, str)
+            }
+            self.assertNotIn(model["business_need_date"], task.prompt)
+            facts = {
+                "review_date": (model["business_need_date"],),
+                "blackout": tuple(model["operations_blackout_dates"]),
+                "refresh": (model["next_full_register_refresh"],),
+                "standard_rate": (
+                    f"{calendar['standard_rate']} supported records per business day",
+                ),
+                "expedite_fee": (
+                    f"USD {calendar['expedite_fee']} per record",
+                    f'"expedite_fee_usd_per_record": {calendar["expedite_fee"]}',
+                ),
+                "rereview_cost": (
+                    f"USD {calendar['rereview_cost']} per record",
+                    f"re-review charge is USD {calendar['rereview_cost']}",
+                ),
+            }
+            carriers: dict[str, set[str]] = {}
+            for name, patterns in facts.items():
+                carriers[name] = {
+                    relative
+                    for relative, content in text_documents.items()
+                    if any(pattern in content for pattern in patterns)
+                }
+                self.assertGreaterEqual(len(carriers[name]), 2, (task.task_id, name))
+            self.assertFalse(
+                set.intersection(*carriers.values()),
+                (task.task_id, "one document carries every calendar input"),
+            )
+            for option in task.spec["decision_options"]:
+                for content in text_documents.values():
+                    self.assertNotIn(f'"outcome": "{option["outcome"]}"', content)
+                    self.assertNotIn(
+                        f'"incremental_cost": {option["incremental_cost"]}', content
+                    )
+
+    def test_every_task_holds_an_approval_pending_and_a_superseded_period_record(self) -> None:
+        for task in self.tasks:
+            blocking = {hold["blocking_condition"] for hold in task.spec["expected_holds"]}
+            self.assertIn("approval_pending", blocking, task.task_id)
+            self.assertIn("outside_current_period", blocking, task.task_id)
+            self.assertEqual(
+                task.spec["expected_decision_summary"]["approval_pending_records"],
+                sum(
+                    hold["blocking_condition"] == "approval_pending"
+                    for hold in task.spec["expected_holds"]
+                ),
+            )
+
     def test_business_evidence_does_not_publish_a_precomputed_change(self) -> None:
         forbidden_keys = (
             '"decision"',
@@ -310,6 +499,13 @@ class CatalogGenerationTests(unittest.TestCase):
             '"authorized_record_id"',
             '"authorized_field"',
             '"required_value"',
+            '"business_need_date":',
+            '"recommended_outcome_date":',
+            '"outcome_vs_control_days":',
+            '"decision_timing_status":',
+            '"incremental_cost":',
+            '"expedite_days_saved":',
+            '"escalation_recommended":',
         )
         for task in self.tasks:
             text_documents = [
@@ -448,18 +644,28 @@ class CatalogGenerationTests(unittest.TestCase):
         self.assertTrue(all(isinstance(row, dict) for row in rows))
         self.assertEqual(len({row["task_id"] for row in rows}), 100)
         self.assertTrue(
-            all(len(row["rubric"]["criteria"]) == 14 for row in rows)
+            all(len(row["rubric"]["milestones"]) == len(MILESTONE_IDS) for row in rows)
+        )
+        self.assertTrue(
+            all(len(row["rubric"]["criteria"]) >= 300 for row in rows)
         )
         self.assertTrue(
             all(
-                sum(criterion["weight"] for criterion in row["rubric"]["criteria"])
+                sum(milestone["weight"] for milestone in row["rubric"]["milestones"])
                 == 100
                 for row in rows
             )
         )
         self.assertTrue(
             all(
-                10 <= row["rubric"]["required_document_reads"] <= 12
+                "decision_model" in row["gold_output"]["changes"]
+                and len(row["rubric"]["decision_options"]) == 3
+                for row in rows
+            )
+        )
+        self.assertTrue(
+            all(
+                16 <= row["rubric"]["required_document_reads"] <= 18
                 and row["rubric"]["reference_document_reads"] == 24
                 and row["rubric"]["call_order_policy"].startswith(
                     "The reference trajectory is illustrative, not graded."

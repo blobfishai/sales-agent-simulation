@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute all SalesBench tasks against oracle, replay, and negative controls."""
+"""Execute all SalesBench tasks against oracle, replay, and eleven negative controls."""
 
 from __future__ import annotations
 
@@ -270,6 +270,56 @@ def wrong_decision(
     )
 
 
+def wrong_alternative(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Reach the exact CRM state but misreport the alternatives and timing.
+
+    The hold alternative is relabelled as on time with the recommended
+    outcome date, the expedite fee is reported as approved, and the honest
+    timing status is flipped; the graded decision model must reject it.
+    """
+
+    for call in reference["calls"]:
+        if call["server"] == "filesystem" and call["name"] == "write_file":
+            continue
+        checked_call(world, call["server"], call["name"], call["arguments"])
+    changes = deepcopy(reference["changes"])
+    model = changes["decision_model"]
+    options = model["options"]
+    for option_id, option in options.items():
+        if option["approval"] == "AVAILABLE_NOT_RECOMMENDED":
+            option["outcome"] = model["recommended_outcome_date"]
+            option["timing_status"] = "ON_TIME"
+            option["outcome_vs_control_days"] = model["outcome_vs_control_days"]
+        elif option["approval"] == "ADDITIONAL_APPROVAL_REQUIRED":
+            option["approval"] = "APPROVED"
+            option["incremental_cost"] = 0
+    model["decision_timing_status"] = (
+        "LATE" if model["decision_timing_status"] == "ON_TIME" else "ON_TIME"
+    )
+    checked_call(
+        world,
+        "filesystem",
+        "write_file",
+        {
+            "path": "/workspace/output/changes.json",
+            "content": json.dumps(changes, ensure_ascii=False, indent=2) + "\n",
+        },
+    )
+    checked_call(
+        world,
+        "filesystem",
+        "write_file",
+        {
+            "path": "/workspace/output/brief.md",
+            "content": reference["brief_text"],
+        },
+    )
+
+
 Runner = Callable[[SalesWorld, dict[str, Any], dict[str, Any]], None]
 
 
@@ -335,6 +385,7 @@ def run(release: Path) -> dict[str, Any]:
         ("wrong_evidence", wrong_evidence),
         ("wrong_value", wrong_value),
         ("wrong_decision", wrong_decision),
+        ("wrong_alternative", wrong_alternative),
         ("noop", noop),
     ]
     oracle_passes = 0

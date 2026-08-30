@@ -20,9 +20,10 @@ from .action_specs import ACTION_SPECS, ActionSpec, validate_action_specs
 from .catalog import FAMILY_SETTINGS, TASK_SPINES, TaskSpine
 from .contracts import CONTRACT_PINS
 from .decision_specs import DECISION_RULES, validate_decision_rules
+from .runtime.scoring import MILESTONE_IDS, criterion_catalog, milestone_for
 
 
-RELEASE_VERSION = "3.3.0"
+RELEASE_VERSION = "3.4.0"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
 FIXED_XLSX_ZIP_TIMESTAMP = (2026, 8, 26, 12, 0, 0)
 DOCUMENT_COUNT = 28
@@ -35,6 +36,36 @@ DISTRACTOR_ENTITY_COUNT = 48
 MIN_REFERENCE_TOOL_CALLS = 68
 MAX_REFERENCE_TOOL_CALLS = 114
 DELIVERABLES = ("changes.json", "brief.md")
+
+# Every held portfolio record carries one of these blocking conditions.  Held
+# records are assigned in slot order so each task always contains at least one
+# approval-pending record (the unauthorized scope that must stay untouched) and
+# one superseded-period record (the control-window exclusion).
+HOLD_REASONS = (
+    "approval_pending",
+    "source_conflict",
+    "identity_ambiguous",
+    "outside_current_period",
+)
+
+# Text sources that carry the operating calendar, queue capacity, fee, and
+# review-date facts behind the graded decision model.  No single source holds
+# every input and none of them states an option outcome.
+DECISION_CALENDAR_SOURCES = (
+    "15_collaboration/operations-slack-thread.json",
+    "15_collaboration/revenue-slack-thread.json",
+    "16_approvals/drive-approval-record.json",
+    "17_communications/source-request.eml",
+    "19_controls/current-authority.md",
+    "20_audit/evidence-status.yaml",
+)
+
+OPTION_APPROVAL_STATES = (
+    "APPROVED",
+    "ADDITIONAL_APPROVAL_REQUIRED",
+    "AVAILABLE_NOT_RECOMMENDED",
+)
+EXPEDITE_OPTION_SUFFIX = "expedited-exception-queue"
 
 validate_action_specs({spine.slug for spine in TASK_SPINES})
 validate_decision_rules({spine.slug for spine in TASK_SPINES})
@@ -400,7 +431,9 @@ def _supplemental_documents(
     spine: TaskSpine,
     task_id: str,
     task_number: int,
+    calendar: dict[str, Any],
 ) -> dict[str, str | bytes]:
+    retired_calendar = calendar["retired"]
     revisions = [
         {
             "case_id": task_id,
@@ -431,7 +464,7 @@ def _supplemental_documents(
     current = [row for row in revisions if row["status"] == "current"]
     retired = [row for row in revisions if row["status"] == "retired"]
 
-    def json_document(kind: str, rows: list[dict[str, Any]]) -> str:
+    def json_document(kind: str, rows: list[dict[str, Any]], **extra: Any) -> str:
         return json.dumps(
             {
                 "case_id": task_id,
@@ -440,6 +473,7 @@ def _supplemental_documents(
                 "record_type": kind,
                 "records": rows,
                 "warning": "Correlate effective revisions and immutable provider IDs; this file does not pre-authorize a mutation.",
+                **extra,
             },
             ensure_ascii=False,
             indent=2,
@@ -455,7 +489,12 @@ def _supplemental_documents(
             writer.writerow({"case_id": task_id, "record_type": kind, **row})
         return stream.getvalue()
 
-    def email_document(subject: str, rows: list[dict[str, Any]], authority: str) -> str:
+    def email_document(
+        subject: str,
+        rows: list[dict[str, Any]],
+        authority: str,
+        preamble: list[str],
+    ) -> str:
         bullets = "\n".join(
             f"- {row['source']} revision {row['revision']} ({row['status']}): {row['control_note']}"
             for row in rows
@@ -467,9 +506,18 @@ def _supplemental_documents(
             f"Subject: {subject} — {task_id}\n"
             "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n"
             f"Case: {task_id}\nCompany: {spine.company}\nAuthority: {authority}\n\n"
-            f"{bullets}\n\nDo not infer a supported record change from this thread alone.\n"
+            + "\n".join(preamble)
+            + f"\n\n{bullets}\n\nDo not infer a supported record change from this thread alone.\n"
         )
 
+    standard_rate = calendar["standard_rate"]
+    expedited_rate = calendar["expedited_rate"]
+    expedite_fee = calendar["expedite_fee"]
+    rereview_cost = calendar["rereview_cost"]
+    review_date = calendar["review_date"]
+    refresh_date = calendar["refresh_date"]
+    blackout_dates = list(calendar["blackout_dates"])
+    approval_id = calendar["approval_id"]
     current_markdown = "\n".join(
         [
             f"# Current authority register — {task_id}",
@@ -481,6 +529,26 @@ def _supplemental_documents(
             "These controls are effective for the requested review. Resolve immutable IDs across systems, compare current revisions, preserve ambiguous records, and read persisted state after every authorized write.",
             "",
             *[f"## {row['source']} {row['revision']}\n\n{row['control_note']}" for row in current],
+            "",
+            "## Operations queue capacity",
+            "",
+            f"The standard operations queue executes and reads back {standard_rate} supported "
+            "records per business day. Processing days are Monday to Friday, start on the first "
+            "business day after the as-of date, and skip the blackout dates published by "
+            "Operations. Standard-queue processing of records that pass every control is "
+            "delegated to the requester under the current approval.",
+            "",
+            "## Expedited exception queue",
+            "",
+            f"The expedited exception queue clears up to {expedited_rate} records per business day "
+            f"at USD {expedite_fee} per record. Expedite fees are outside the requester's delegated "
+            "authority and require Finance Deal Desk approval before any record is submitted.",
+            "",
+            "## Re-review cycle",
+            "",
+            "A portfolio that is held in full re-enters review only at the next full register "
+            f"refresh, and every one of the {PORTFOLIO_ENTITY_COUNT} keys is re-reviewed at the "
+            f"standard queue rate. The re-review charge is USD {rereview_cost} per record.",
         ]
     ) + "\n"
     retired_markdown = "\n".join(
@@ -496,15 +564,41 @@ def _supplemental_documents(
             "",
             *[f"## {row['source']} {row['revision']}\n\n{row['control_note']}" for row in retired],
             "",
+            "## Retired queue and fee schedule",
+            "",
+            f"Superseded capacity: {retired_calendar['standard_rate']} records per business day "
+            f"with an expedite fee of USD {retired_calendar['expedite_fee']} per record and a "
+            f"re-review charge of USD {retired_calendar['rereview_cost']} per record. These "
+            "figures expired with this register and must not be used for the current review.",
+            "",
             "A retired control may be cited as conflict context but cannot authorize a current-period transition. Never use this appendix by itself to select an option, change CRM state, infer approval, or overwrite a current owner. If current evidence remains ambiguous, preserve the live record and identify the conflict in the handoff.",
         ]
     ) + "\n"
     audit_log = "\n".join(
-        f"2026-08-26T{index:02d}:00:00Z case={task_id} source={row['source']} revision={row['revision']} status={row['status']} event=metadata-indexed note={row['control_note']}"
-        for index, row in enumerate(revisions)
+        [
+            *[
+                f"2026-08-26T{index:02d}:00:00Z case={task_id} source={row['source']} revision={row['revision']} status={row['status']} event=metadata-indexed note={row['control_note']}"
+                for index, row in enumerate(revisions)
+            ],
+            *[
+                f"2026-08-26T12:{index:02d}:00Z case={task_id} source=Operations event=blackout-published date={value} note=CRM release freeze; the operations queue does not process records on this date"
+                for index, value in enumerate(blackout_dates)
+            ],
+            f"2026-08-26T12:30:00Z case={task_id} source=Revenue event=refresh-scheduled date={refresh_date} note=next full register refresh for a held portfolio",
+        ]
     ) + "\n"
     evidence_yaml = "\n".join(
-        [f"case_id: {task_id}", f"company: {json.dumps(spine.company)}", "sources:"]
+        [
+            f"case_id: {task_id}",
+            f"company: {json.dumps(spine.company)}",
+            "operating_calendar:",
+            "  processing_days: Monday to Friday",
+            "  blackout_dates:",
+            *[f"    - {value}" for value in blackout_dates],
+            f"  next_full_register_refresh: {refresh_date}",
+            "  note: a held portfolio is re-reviewed in full at the next refresh; outcomes are not stated here",
+            "sources:",
+        ]
         + [
             f"  - name: {row['source']}\n    revision: {row['revision']}\n    status: {row['status']}\n    effective_period: {row['effective_period']}\n    note: {json.dumps(row['control_note'])}"
             for row in revisions
@@ -518,6 +612,7 @@ def _supplemental_documents(
         "Each write is task-scoped, performed once, and followed by an exact persisted readback.",
         "Gong remains read-only; private call content is never copied to another system.",
         "The result brief cites controlling and corroborating sources without exposing private content.",
+        "Standard-queue processing is delegated; expedite fees require Finance Deal Desk sign-off.",
         *[f"CURRENT {row['source']} {row['revision']}: {row['control_note']}" for row in current],
     ]
     retired_pdf_lines = [
@@ -539,6 +634,94 @@ def _supplemental_documents(
         }
         for row in revisions
     ]
+    calendar_rows = [
+        {"case_id": task_id, "item": "as_of", "date": calendar["as_of"], "status": "current"},
+        {"case_id": task_id, "item": "portfolio_review_meeting", "date": review_date, "status": "current"},
+        *[
+            {"case_id": task_id, "item": "operations_blackout", "date": value, "status": "current"}
+            for value in blackout_dates
+        ],
+        {"case_id": task_id, "item": "next_full_register_refresh", "date": refresh_date, "status": "current"},
+        {"case_id": task_id, "item": "portfolio_review_meeting", "date": retired_calendar["review_date"], "status": "retired"},
+    ]
+    operations_messages = [
+        {
+            "author": "operations-lead",
+            "posted": f"{calendar['as_of']}T09:15:00Z",
+            "text": (
+                f"Queue status for {task_id}: the standard operations queue is executing and "
+                f"reading back {standard_rate} supported records per business day, Monday to Friday, "
+                "starting the first business day after the as-of date."
+            ),
+        },
+        {
+            "author": "operations-lead",
+            "posted": f"{calendar['as_of']}T09:20:00Z",
+            "text": (
+                f"Reminder: {', '.join(blackout_dates)} is a CRM release-freeze blackout. No "
+                "portfolio records are processed that day; count it out of every projection."
+            ),
+        },
+        {
+            "author": "revenue-controls",
+            "posted": f"{calendar['as_of']}T09:32:00Z",
+            "text": (
+                "Projections are not published here. Derive them from the supported-record count "
+                "after the control join; this thread only confirms capacity and the calendar."
+            ),
+        },
+    ]
+    revenue_messages = [
+        {
+            "author": "revenue-controls",
+            "posted": f"{calendar['as_of']}T10:05:00Z",
+            "text": (
+                f"If the {spine.title.casefold()} portfolio is held in full, it does not re-enter "
+                f"review until the next full register refresh on {refresh_date}, and all "
+                f"{PORTFOLIO_ENTITY_COUNT} keys are re-reviewed at the standard queue rate."
+            ),
+        },
+        {
+            "author": "finance-deal-desk",
+            "posted": f"{calendar['as_of']}T10:12:00Z",
+            "text": (
+                f"The re-review charge is USD {rereview_cost} per record and is billed to the "
+                "requesting team. Expedite fees remain a Finance Deal Desk decision and are "
+                "not delegated with the standard approval."
+            ),
+        },
+        {
+            "author": spine.requester,
+            "posted": f"{calendar['as_of']}T10:20:00Z",
+            "text": (
+                "Understood. I will take the supported records through the queue the current "
+                "approval covers and escalate anything that needs a separate sign-off."
+            ),
+        },
+    ]
+    approval_record = {
+        "approval_id": approval_id,
+        "approved_by": "Revenue Controls Committee",
+        "approved_scope": (
+            "standard operations queue processing of the portfolio records that pass every "
+            "identity, observation, authority, live-system, and exception control"
+        ),
+        "approval_window_closes": review_date,
+        "window_note": (
+            f"The {spine.period} portfolio review meeting on {review_date} closes the approval "
+            "window; supported records must be executed and read back before it."
+        ),
+        "excluded_scope": [
+            "records whose secondary approval is still pending",
+            "records with a superseded-period observation",
+            "expedited exception-queue submissions",
+        ],
+        "expedite_fee_usd_per_record": expedite_fee,
+        "expedite_fee_authority": (
+            "Finance Deal Desk approval; not covered by this approval and outside the "
+            "requester's delegated authority"
+        ),
+    }
     return {
         "13_controls/current-revenue-control.pdf": _pdf_bytes(
             "Current revenue operations control", current_pdf_lines
@@ -550,14 +733,42 @@ def _supplemental_documents(
             {"Source revisions": workbook_rows, "Control notes": revisions}
         ),
         "14_workbooks/review-capacity.xlsx": _xlsx_bytes(
-            {"Review calendar": list(reversed(workbook_rows)), "Authority": current}
+            {"Review calendar": calendar_rows, "Authority": current}
         ),
-        "15_collaboration/operations-slack-thread.json": json_document("operations_slack_thread", revisions),
-        "15_collaboration/revenue-slack-thread.json": json_document("revenue_slack_thread", list(reversed(revisions))),
-        "16_approvals/drive-approval-record.json": json_document("drive_approval_record", current),
+        "15_collaboration/operations-slack-thread.json": json_document(
+            "operations_slack_thread", revisions, messages=operations_messages
+        ),
+        "15_collaboration/revenue-slack-thread.json": json_document(
+            "revenue_slack_thread", list(reversed(revisions)), messages=revenue_messages
+        ),
+        "16_approvals/drive-approval-record.json": json_document(
+            "drive_approval_record", current, approval=approval_record
+        ),
         "16_approvals/drive-source-index.json": json_document("drive_source_index", revisions),
-        "17_communications/source-request.eml": email_document("Current review request", current, "current"),
-        "17_communications/former-owner-suggestion.eml": email_document("Former owner suggestion", retired, "retired"),
+        "17_communications/source-request.eml": email_document(
+            "Current review request",
+            current,
+            "current",
+            [
+                f"The {spine.period} portfolio review meeting is scheduled for {review_date} "
+                f"({calendar['review_weekday']}). Every supported record must be executed and "
+                "read back before that meeting.",
+                f"Approval {approval_id} covers standard-queue processing of supported records "
+                "only. Do not commit expedite fees or act on approval-pending records without "
+                "the separate sign-off.",
+            ],
+        ),
+        "17_communications/former-owner-suggestion.eml": email_document(
+            "Former owner suggestion",
+            retired,
+            "retired",
+            [
+                f"For what it is worth, the old plan had the review on "
+                f"{retired_calendar['review_date']} and the queue running at "
+                f"{retired_calendar['standard_rate']} records a day. That schedule was retired "
+                "with my handover and is not the current calendar.",
+            ],
+        ),
         "18_lineage/record-lineage.csv": csv_document("record_lineage", revisions),
         "18_lineage/cross-system-register.csv": csv_document("cross_system_register", list(reversed(revisions))),
         "19_controls/current-authority.md": current_markdown,
@@ -621,7 +832,15 @@ def _render_decision_template(
 
 
 def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
-    """Return plausible task-specific approaches without disclosing the winner."""
+    """Return the three operating alternatives without disclosing their outcomes.
+
+    Index 0 applies the authored rule through the standard operations queue,
+    index 1 pushes the same supported records through the expedited exception
+    queue (a fee that only Finance Deal Desk can approve), and index 2 holds
+    the whole portfolio until the next full register refresh.  Outcome dates,
+    incremental costs, and authority statuses are derived from the evidence
+    room and are never published with the approaches.
+    """
 
     kind = ACTION_SPECS[spine.slug].value_kind
     variants = {
@@ -632,14 +851,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Join identity, current observation, authority, provider state, and exceptions.",
             ),
             (
-                "latest-provider-bulk-sync",
-                "Treat the newest provider timestamp as authoritative",
-                "Use recency as the only selection rule and synchronize the portfolio.",
-            ),
-            (
                 "portfolio-wide-hold",
                 "Leave the entire portfolio unchanged",
-                "Wait for every source to agree verbatim before acting on any row.",
+                "Wait for the next full register refresh before acting on any row.",
             ),
         ),
         "amount": (
@@ -649,14 +863,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Apply the documented exclusions, effective rate, and rounding rule per row.",
             ),
             (
-                "gross-header-value",
-                "Copy the gross CRM header value",
-                "Ignore exclusions and conversion controls and use the displayed gross amount.",
-            ),
-            (
                 "amount-review-hold",
                 "Hold all amount corrections",
-                "Defer every row until the next finance review even when inputs reconcile.",
+                "Defer every row to the next full register refresh even when inputs reconcile.",
             ),
         ),
         "date": (
@@ -666,14 +875,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Compare the buyer-supported date with the first allowed operating date.",
             ),
             (
-                "earliest-calendar-date",
-                "Use the earliest date found in any source",
-                "Prefer speed even when that date violates the current policy constraint.",
-            ),
-            (
                 "retain-stale-date",
                 "Leave every current CRM date in place",
-                "Avoid correction even where current evidence resolves the conflict.",
+                "Defer correction to the next full register refresh even where evidence resolves the conflict.",
             ),
         ),
         "owner": (
@@ -683,14 +887,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Reconcile territory and role fit with the effective capacity register.",
             ),
             (
-                "round-robin-owner",
-                "Use an unqualified round-robin assignment",
-                "Ignore territory, status, and capacity in favor of queue order.",
-            ),
-            (
                 "retain-routing-queue",
                 "Leave every supported row in the routing queue",
-                "Avoid assignment even where one candidate satisfies every control.",
+                "Defer assignment to the next full register refresh even where one candidate satisfies every control.",
             ),
         ),
         "risk": (
@@ -700,14 +899,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Meet the independent-source threshold without copying private activity.",
             ),
             (
-                "seller-note-risk",
-                "Trust a single seller-authored risk note",
-                "Classify from one assertion without independent corroboration.",
-            ),
-            (
-                "clear-all-risks",
-                "Remove risk labels from the entire portfolio",
-                "Treat missing verbatim agreement as evidence that no risk exists.",
+                "retain-unreviewed-risk",
+                "Leave every risk field unreviewed",
+                "Defer classification to the next full register refresh even where corroboration exists.",
             ),
         ),
         "signal": (
@@ -717,14 +911,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Use the explicit synthesized buyer commitment and reject seller inference.",
             ),
             (
-                "seller-inferred-action",
-                "Record the seller's inferred next step",
-                "Treat an internal interpretation as if the buyer had committed to it.",
-            ),
-            (
                 "blanket-signal-hold",
                 "Leave all signal fields unchanged",
-                "Defer supported actions together with genuinely ambiguous records.",
+                "Defer supported actions to the next full register refresh together with ambiguous records.",
             ),
         ),
         "role": (
@@ -734,14 +923,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Require two permitted sources to agree on the person's buying role.",
             ),
             (
-                "title-derived-role",
-                "Infer the role from a job title alone",
-                "Use one ambiguous attribute without source corroboration.",
-            ),
-            (
                 "retain-unknown-role",
                 "Keep every stakeholder role unknown",
-                "Leave even independently supported role corrections unresolved.",
+                "Defer even independently supported role corrections to the next full register refresh.",
             ),
         ),
         "cross_id": (
@@ -751,14 +935,9 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Require legal name, domain, external key, and mapping revision to agree.",
             ),
             (
-                "name-only-crosswalk",
-                "Match records by the closest display name",
-                "Ignore domain, immutable identifiers, and effective revision.",
-            ),
-            (
                 "leave-links-empty",
                 "Leave every cross-system link empty",
-                "Defer exact matches together with genuinely ambiguous identities.",
+                "Defer exact matches to the next full register refresh together with ambiguous identities.",
             ),
         ),
         "account": (
@@ -768,42 +947,39 @@ def _candidate_options(spine: TaskSpine) -> list[dict[str, str]]:
                 "Reconcile legal name, domain, and external identifier.",
             ),
             (
-                "closest-account-alias",
-                "Select the closest account alias",
-                "Ignore the immutable crosswalk when a display name looks similar.",
-            ),
-            (
                 "leave-account-unresolved",
                 "Leave every account association unresolved",
-                "Avoid supported associations along with genuinely ambiguous ones.",
+                "Defer supported associations to the next full register refresh along with ambiguous ones.",
             ),
         ),
     }[kind]
-    options = [
-        {
-            "id": f"{spine.slug}:{suffix}",
-            "label": label,
-            "approach": approach,
-        }
-        for suffix, label, approach in variants
-    ]
+    (controlled_suffix, _, controlled_approach), (hold_suffix, _, hold_approach) = variants
     rule = DECISION_RULES[spine.slug]
-    options[0]["label"] = f"Apply the controlled {spine.title.casefold()} rule"
-    options[0]["approach"] = rule.method
-    options[1]["label"] = (
-        f"Use {rule.observation_key.replace('_', ' ')} without the controlling authority"
-    )
-    options[2]["label"] = f"Hold the entire {spine.title.casefold()} portfolio"
-    return options
+    title = spine.title.casefold()
+    return [
+        {
+            "id": f"{spine.slug}:{controlled_suffix}",
+            "label": f"Apply the controlled {title} rule through the standard operations queue",
+            "approach": f"{rule.method}; {controlled_approach}",
+        },
+        {
+            "id": f"{spine.slug}:{EXPEDITE_OPTION_SUFFIX}",
+            "label": f"Push the supported {title} records through the expedited exception queue",
+            "approach": (
+                "Apply the same controlled rule, but submit every supported record to the "
+                "expedited exception queue at the documented per-record fee."
+            ),
+        },
+        {
+            "id": f"{spine.slug}:{hold_suffix}",
+            "label": f"Hold the entire {title} portfolio until the next full register refresh",
+            "approach": hold_approach,
+        },
+    ]
 
 
-def _hold_reason(entity: dict[str, Any]) -> str:
-    return (
-        "approval_pending",
-        "source_conflict",
-        "identity_ambiguous",
-        "outside_current_period",
-    )[entity["slot"] % 4]
+def _hold_reason(entity: dict[str, Any]) -> str | None:
+    return entity.get("hold_reason")
 
 
 def _sf_id(prefix: str, task_number: int, slot: int) -> str:
@@ -816,6 +992,146 @@ def _hub_id(task_number: int, slot: int, offset: int) -> str:
 
 def _as_of(task_number: int) -> str:
     return (date(2026, 8, 26) + timedelta(days=task_number % 19)).isoformat()
+
+
+def business_days_after(start: date, count: int, blackouts: frozenset[date]) -> date:
+    """Return the business day ``count`` working days after ``start``.
+
+    The operations queue runs Monday to Friday and skips published blackout
+    dates; ``count`` is the number of processing days consumed.
+    """
+
+    current = start
+    remaining = count
+    while remaining > 0:
+        current += timedelta(days=1)
+        if current.weekday() < 5 and current not in blackouts:
+            remaining -= 1
+    return current
+
+
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return -(-numerator // denominator)
+
+
+def decision_calendar(spine: TaskSpine, task_number: int) -> dict[str, Any]:
+    """Return the task's documented operating calendar and cost controls.
+
+    These are the raw inputs behind the decision model.  They are seeded into
+    the evidence room across several independent sources; the option outcomes
+    derived from them are never written anywhere the agent can read.
+    """
+
+    as_of = date.fromisoformat(_as_of(task_number))
+    seed = stable_seed(f"{task_number}:{spine.slug}:decision-calendar")
+    standard_rate = 2 + seed % 3
+    expedited_rate = (12, 15, 20)[(seed // 3) % 3]
+    expedite_fee = 150 + 25 * ((seed // 9) % 5)
+    rereview_cost = 40 + 15 * ((seed // 45) % 4)
+    blackout = business_days_after(as_of, 1 + (seed // 180) % 4, frozenset())
+    blackouts = frozenset({blackout})
+    review_date = business_days_after(as_of, 3 + (seed // 720) % 6, blackouts)
+    refresh_date = business_days_after(review_date, 1 + (seed // 4320) % 3, blackouts)
+    retired_review_date = review_date - timedelta(days=7 + (seed // 12960) % 5)
+    return {
+        "as_of": as_of.isoformat(),
+        "review_date": review_date.isoformat(),
+        "review_weekday": review_date.strftime("%A"),
+        "standard_rate": standard_rate,
+        "expedited_rate": expedited_rate,
+        "expedite_fee": expedite_fee,
+        "rereview_cost": rereview_cost,
+        "blackout_dates": [blackout.isoformat()],
+        "refresh_date": refresh_date.isoformat(),
+        "approval_id": f"AP-{task_number:03d}-{stable_seed(spine.slug) % 900 + 100}",
+        "retired": {
+            "review_date": retired_review_date.isoformat(),
+            "standard_rate": standard_rate + 1,
+            "expedite_fee": expedite_fee - 25,
+            "rereview_cost": rereview_cost + 10,
+        },
+    }
+
+
+def decision_model(
+    spine: TaskSpine,
+    task_number: int,
+    changes: list[dict[str, Any]],
+    holds: list[dict[str, Any]],
+    calendar: dict[str, Any],
+) -> dict[str, Any]:
+    """Derive the costed, dated, authority-tagged alternatives for a task.
+
+    Outcomes are computed from the supported-record count (the control join),
+    the documented queue capacities, the operations blackout calendar, the
+    review date, and the refresh schedule.  None of the outcomes appear in the
+    evidence room.
+    """
+
+    as_of = date.fromisoformat(calendar["as_of"])
+    blackouts = frozenset(date.fromisoformat(value) for value in calendar["blackout_dates"])
+    review_date = date.fromisoformat(calendar["review_date"])
+    refresh_date = date.fromisoformat(calendar["refresh_date"])
+    supported = len(changes)
+    standard_days = _ceil_div(supported, calendar["standard_rate"])
+    expedited_days = _ceil_div(supported, calendar["expedited_rate"])
+    hold_days = _ceil_div(PORTFOLIO_ENTITY_COUNT, calendar["standard_rate"])
+    standard_outcome = business_days_after(as_of, standard_days, blackouts)
+    expedited_outcome = business_days_after(as_of, expedited_days, blackouts)
+    hold_outcome = business_days_after(refresh_date, hold_days, blackouts)
+
+    def variance(outcome: date) -> int:
+        return (outcome - review_date).days
+
+    def status(outcome: date) -> str:
+        return "ON_TIME" if outcome <= review_date else "LATE"
+
+    options = _candidate_options(spine)
+    controlled, expedited, hold = options
+    graded_options = {
+        controlled["id"]: {
+            "outcome": standard_outcome.isoformat(),
+            "incremental_cost": 0,
+            "approval": "APPROVED",
+            "control_status": "SUPPORTED_AND_APPROVED",
+            "outcome_vs_control_days": variance(standard_outcome),
+            "timing_status": status(standard_outcome),
+        },
+        expedited["id"]: {
+            "outcome": expedited_outcome.isoformat(),
+            "incremental_cost": supported * calendar["expedite_fee"],
+            "approval": "ADDITIONAL_APPROVAL_REQUIRED",
+            "control_status": "SEPARATE_APPROVAL_OR_POLICY_EXCEPTION_REQUIRED",
+            "outcome_vs_control_days": variance(expedited_outcome),
+            "timing_status": status(expedited_outcome),
+        },
+        hold["id"]: {
+            "outcome": hold_outcome.isoformat(),
+            "incremental_cost": PORTFOLIO_ENTITY_COUNT * calendar["rereview_cost"],
+            "approval": "AVAILABLE_NOT_RECOMMENDED",
+            "control_status": "FEASIBLE_WITH_INFERIOR_TRADEOFF",
+            "outcome_vs_control_days": variance(hold_outcome),
+            "timing_status": status(hold_outcome),
+        },
+    }
+    standard_status = status(standard_outcome)
+    return {
+        "business_need_date": review_date.isoformat(),
+        "standard_queue_records_per_business_day": calendar["standard_rate"],
+        "expedited_queue_records_per_business_day": calendar["expedited_rate"],
+        "expedite_fee_usd_per_record": calendar["expedite_fee"],
+        "rereview_cost_usd_per_record": calendar["rereview_cost"],
+        "operations_blackout_dates": list(calendar["blackout_dates"]),
+        "next_full_register_refresh": refresh_date.isoformat(),
+        "standard_processing_business_days": standard_days,
+        "options": graded_options,
+        "recommended_outcome_date": standard_outcome.isoformat(),
+        "recommended_incremental_cost_usd": 0,
+        "outcome_vs_control_days": variance(standard_outcome),
+        "decision_timing_status": standard_status,
+        "expedite_days_saved": (standard_outcome - expedited_outcome).days,
+        "escalation_recommended": standard_status == "LATE",
+    }
 
 
 def _money(task_number: int, slot: int) -> int:
@@ -890,7 +1206,16 @@ def build_entities(spine: TaskSpine, task_number: int) -> list[dict[str, Any]]:
                 ).isoformat(),
             }
         )
+    held = sorted(
+        (entity for entity in entities if not entity["target"]),
+        key=lambda entity: entity["slot"],
+    )
+    if len(held) < len(HOLD_REASONS):
+        raise ValueError(f"expected at least {len(HOLD_REASONS)} held records, got {len(held)}")
+    for index, entity in enumerate(held):
+        entity["hold_reason"] = HOLD_REASONS[index % len(HOLD_REASONS)]
     for entity in entities:
+        entity.setdefault("hold_reason", None)
         entity["decision_facts"] = _build_decision_facts(spine, entity)
     return entities
 
@@ -1841,12 +2166,38 @@ def _artifact_payload(
                     "schema_version": "salesbench.changes.v1",
                     "top_level_fields": [
                         "task_id", "title", "company", "as_of", "decision_summary",
-                        "changes", "holds",
+                        "decision_model", "changes", "holds",
                     ],
                     "decision_summary_fields": [
                         "selected_option_id", "value_kind", "method", "actionable_records",
-                        "held_records", "alternatives_considered",
+                        "held_records", "approval_pending_records", "alternatives_considered",
                     ],
+                    "decision_model_fields": [
+                        "business_need_date", "standard_queue_records_per_business_day",
+                        "expedited_queue_records_per_business_day", "expedite_fee_usd_per_record",
+                        "rereview_cost_usd_per_record", "operations_blackout_dates",
+                        "next_full_register_refresh", "standard_processing_business_days",
+                        "options", "recommended_outcome_date", "recommended_incremental_cost_usd",
+                        "outcome_vs_control_days", "decision_timing_status", "expedite_days_saved",
+                        "escalation_recommended",
+                    ],
+                    "decision_model_option_fields": [
+                        "outcome", "incremental_cost", "approval", "control_status",
+                        "outcome_vs_control_days", "timing_status",
+                    ],
+                    "decision_model_rules": (
+                        "Key options by candidate approach id. outcome is the ISO date on which "
+                        "the option's full scope is executed and read back: processing days are "
+                        "Monday to Friday after the as-of date, skip published blackout dates, and "
+                        "consume the documented queue capacity per business day; the hold "
+                        "alternative starts at the next full register refresh and re-reviews all "
+                        "16 keys. incremental_cost is whole USD relative to the standard queue. "
+                        "approval is APPROVED, ADDITIONAL_APPROVAL_REQUIRED, or "
+                        "AVAILABLE_NOT_RECOMMENDED. outcome_vs_control_days is the signed calendar "
+                        "difference between the outcome and the documented review meeting; "
+                        "timing_status is ON_TIME or LATE. escalation_recommended is true only "
+                        "when the recommended option lands after the review meeting."
+                    ),
                     "change_fields": [
                         "id", "system", "object_type", "record_id", "operation", "field",
                         "before", "after", "reason", "primary_source", "corroborating_source",
@@ -1869,7 +2220,10 @@ def _artifact_payload(
                     ],
                     "grounding": (
                         "Explain each supported change and each hold with immutable record IDs, "
-                        "the controlling and corroborating sources, owner, and deadline."
+                        "the controlling and corroborating sources, owner, and deadline. State the "
+                        "documented review meeting date and, for every candidate approach, its "
+                        "outcome date, incremental cost as 'USD <amount>', approval status, and "
+                        "whether the recommended outcome is ON_TIME or LATE."
                     ),
                 },
             },
@@ -2056,6 +2410,7 @@ def build_documents(
     task_number: int,
     entities: list[dict[str, Any]],
     changes: list[dict[str, Any]],
+    calendar: dict[str, Any],
 ) -> tuple[dict[str, str | bytes], dict[str, list[str]]]:
     changes_by_key = {change["portfolio_key"]: change for change in changes}
     folders = list(FAMILY_SETTINGS[spine.family]["folders"])
@@ -2097,7 +2452,7 @@ def build_documents(
             paths_by_key_and_role[entity["portfolio_key"]][role] = str(
                 PurePosixPath("/workspace/documents") / relative
             )
-    documents.update(_supplemental_documents(spine, task_id, task_number))
+    documents.update(_supplemental_documents(spine, task_id, task_number, calendar))
     if len(documents) != DOCUMENT_COUNT:
         raise ValueError(f"expected {DOCUMENT_COUNT} documents, got {len(documents)}")
     paths_by_key = {
@@ -2725,8 +3080,9 @@ def _reference_outputs(
     task_number: int,
     changes: list[dict[str, Any]],
     holds: list[dict[str, Any]],
+    model: dict[str, Any],
 ) -> tuple[dict[str, Any], str]:
-    options = _decision_options(spine, task_number, len(changes))
+    options = _decision_options(spine, task_number, changes, holds, model)
     selected = next(option for option in options if option["selected"])
     public_changes = [
         {
@@ -2747,6 +3103,9 @@ def _reference_outputs(
         "method": _decision_method(spine),
         "actionable_records": len(public_changes),
         "held_records": len(holds),
+        "approval_pending_records": sum(
+            hold["blocking_condition"] == "approval_pending" for hold in holds
+        ),
         "alternatives_considered": [option["id"] for option in options],
     }
     payload = {
@@ -2756,9 +3115,23 @@ def _reference_outputs(
         "company": spine.company,
         "as_of": _as_of(task_number),
         "decision_summary": decision_summary,
+        "decision_model": deepcopy(model),
         "changes": public_changes,
         "holds": holds,
     }
+    selected_variance = model["outcome_vs_control_days"]
+    escalation_line = (
+        f"Escalation: recommended — the standard queue lands {selected_variance:+d} day(s) "
+        f"against the {model['business_need_date']} review, so request Finance Deal Desk "
+        f"approval for the expedited exception queue ({selected['id'].split(':')[0]}:"
+        f"{EXPEDITE_OPTION_SUFFIX}) in parallel with the authorized changes."
+        if model["escalation_recommended"]
+        else (
+            f"Escalation: not required — the standard queue lands {selected_variance:+d} "
+            f"day(s) against the {model['business_need_date']} review; the expedite fee "
+            "stays uncommitted and the approval-pending records stay untouched."
+        )
+    )
     sections = [
         f"# {spine.title}",
         "",
@@ -2766,18 +3139,46 @@ def _reference_outputs(
         "",
         (
             f"{spine.narrative} The evidence supports {len(public_changes)} bounded changes; "
-            f"{len(holds)} portfolio records remain on hold."
+            f"{len(holds)} portfolio records remain on hold, "
+            f"{decision_summary['approval_pending_records']} of them pending secondary approval."
         ),
         "",
         "## Decision and alternatives",
         "",
-        f"Selected option: {selected['id']} — {selected['label']}.",
+        (
+            f"Business need: the {spine.period} portfolio review meeting on "
+            f"{model['business_need_date']}, documented in the review request and the approval "
+            "record rather than inferred from the request title."
+        ),
+        (
+            f"Operating calendar: standard queue {model['standard_queue_records_per_business_day']} "
+            "supported records per business day (Monday to Friday) with blackout "
+            f"{', '.join(model['operations_blackout_dates'])}; expedited exception queue "
+            f"{model['expedited_queue_records_per_business_day']} records per business day at "
+            f"USD {model['expedite_fee_usd_per_record']} per record (Finance Deal Desk approval); "
+            f"next full register refresh {model['next_full_register_refresh']} with re-review at "
+            f"USD {model['rereview_cost_usd_per_record']} per record."
+        ),
+        (
+            f"Selected option: {selected['id']} — {selected['label']}. Outcome "
+            f"{selected['outcome']} after {model['standard_processing_business_days']} processing "
+            f"business day(s), incremental cost USD {selected['incremental_cost']:,}, "
+            f"{selected['approval']} ({selected['control_status']}), "
+            f"{selected_variance:+d} day(s) versus the review date, "
+            f"{model['decision_timing_status']}."
+        ),
         f"Method: {decision_summary['method']}.",
         "Alternatives considered:",
         *[
-            f"- {option['id']} — {option['label']}: {option['reason']}"
+            (
+                f"- {option['id']} — {option['label']}: outcome {option['outcome']}, "
+                f"incremental cost USD {option['incremental_cost']:,}, {option['approval']} "
+                f"({option['control_status']}), {option['outcome_vs_control_days']:+d} day(s) "
+                f"versus the review date, {option['timing_status']}. {option['reason']}"
+            )
             for option in options
         ],
+        escalation_line,
         "",
         "## Review method and system coverage",
         "",
@@ -2848,30 +3249,64 @@ def _reference_outputs(
 def _decision_options(
     spine: TaskSpine,
     task_number: int,
-    change_count: int,
+    changes: list[dict[str, Any]],
+    holds: list[dict[str, Any]],
+    model: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Public alternatives the employee request genuinely leaves open."""
+    """Public alternatives the employee request genuinely leaves open.
+
+    Every option carries its derived outcome date, incremental cost, and
+    authority status; exactly one is recommended.
+    """
 
     as_of = _as_of(task_number)
+    change_count = len(changes)
     options = _candidate_options(spine)
+    graded = model["options"]
+    controlled, expedited, hold = (graded[option["id"]] for option in options)
+    pending = sum(row["blocking_condition"] == "approval_pending" for row in holds)
     reasons = (
         (
             f"The independently controlled evidence effective on {as_of} and the live provider "
-            f"state agree for {change_count} portfolio keys."
+            f"state agree for {change_count} portfolio keys; the standard queue is the only "
+            "currently authorized path and it carries no incremental cost."
         ),
         (
-            f"This shortcut ignores at least one controlling input and would also alter "
-            f"{PORTFOLIO_ENTITY_COUNT - change_count} held records."
+            f"Clearing the same {change_count} records {model['expedite_days_saved']} day(s) "
+            f"earlier adds USD {expedited['incremental_cost']:,} in expedite fees that only "
+            "Finance Deal Desk can approve; it is not executable under the current approval."
         ),
         (
-            f"This avoids damage but leaves {change_count} evidence-supported records unresolved."
+            f"Holding all {PORTFOLIO_ENTITY_COUNT} records defers work to the "
+            f"{model['next_full_register_refresh']} refresh, lands "
+            f"{hold['outcome_vs_control_days']:+d} day(s) against the review, bills USD "
+            f"{hold['incremental_cost']:,} in re-review charges, and leaves {change_count} "
+            "evidence-supported records unresolved."
+        ),
+    )
+    consequences = (
+        (
+            f"Executes exactly the {change_count} supported changes, keeps the {len(holds)} held "
+            f"records untouched ({pending} awaiting secondary approval), and lands "
+            f"{controlled['timing_status']} against the documented review date."
+        ),
+        (
+            "Would reach the same CRM state sooner but commits a fee outside the requester's "
+            "delegated authority; treated as an escalation request, never executed here."
+        ),
+        (
+            "Changes nothing now, misses the review meeting, and re-opens every key in the next "
+            "full refresh cycle."
         ),
     )
     return [
         {
             **option,
+            **graded[option["id"]],
             "selected": index == 0,
+            "recommended": index == 0,
             "reason": reasons[index],
+            "consequence": consequences[index],
         }
         for index, option in enumerate(options)
     ]
@@ -2881,7 +3316,7 @@ def _material_document_paths(
     changes: list[dict[str, Any]],
     holds: list[dict[str, Any]],
 ) -> list[str]:
-    """Return evidence that actually controls a change or an explicit hold."""
+    """Return evidence that controls a change, an explicit hold, or the decision model."""
 
     paths = {
         str(path)
@@ -2893,8 +3328,12 @@ def _material_document_paths(
         for hold in holds
         for path in (hold["primary_source"], hold["corroborating_source"])
     )
-    if not 8 <= len(paths) <= 14:
-        raise ValueError(f"expected 8-14 material evidence records, got {len(paths)}")
+    paths.update(
+        str(PurePosixPath("/workspace/documents") / relative)
+        for relative in DECISION_CALENDAR_SOURCES
+    )
+    if not 14 <= len(paths) <= 20:
+        raise ValueError(f"expected 14-20 material evidence records, got {len(paths)}")
     return sorted(paths)
 
 
@@ -2986,6 +3425,15 @@ def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
     )
     selected = spec["expected_decision_summary"]["selected_option_id"]
     alternatives = spec["expected_decision_summary"]["alternatives_considered"]
+    model = spec["expected_decision_model"]
+    expedite_id = next(
+        option["id"] for option in spec["decision_options"]
+        if option["approval"] == "ADDITIONAL_APPROVAL_REQUIRED"
+    )
+    hold_id = next(
+        option["id"] for option in spec["decision_options"]
+        if option["approval"] == "AVAILABLE_NOT_RECOMMENDED"
+    )
     return {
         "business_outcome": (
             f"Resolve {spec['title'].casefold()} for {spec['company']} as of {spec['as_of']}: "
@@ -3005,6 +3453,79 @@ def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
             "source conflict, ambiguous identity, or superseded-period evidence. Compare all candidate "
             f"approaches ({', '.join(alternatives)}) and justify selecting {selected}."
         ),
+        "decision": (
+            f"Read the {model['business_need_date']} review meeting from the review request and the "
+            "approval record, the standard and expedited queue capacities and fees from the current "
+            "authority register and the collaboration threads, and the blackout and refresh calendar "
+            "from the operations thread and the audit evidence. Cost and date every alternative from "
+            f"the {spec['expected_change_count']} supported records: the standard queue lands on "
+            f"{model['recommended_outcome_date']} ({model['outcome_vs_control_days']:+d} day(s), "
+            f"{model['decision_timing_status']}); the expedited queue lands "
+            f"{model['expedite_days_saved']} day(s) earlier but needs Finance Deal Desk approval; "
+            "a full hold waits for the next register refresh and re-reviews every key."
+        ),
+        "decision_calculations": [
+            {
+                "id": "identify_business_need_date",
+                "field": "business_need_date",
+                "description": "Preserve the documented review meeting date; do not infer urgency from the request title.",
+                "sources": ["17_communications/source-request.eml", "16_approvals/drive-approval-record.json"],
+            },
+            {
+                "id": "read_standard_queue_capacity",
+                "field": "standard_queue_records_per_business_day",
+                "description": "Read the current standard-queue throughput; the retired register carries a superseded figure.",
+                "sources": ["19_controls/current-authority.md", "15_collaboration/operations-slack-thread.json"],
+            },
+            {
+                "id": "apply_operations_calendar",
+                "field": "operations_blackout_dates",
+                "description": "Count only Monday-to-Friday processing days and skip the published blackout date.",
+                "sources": ["15_collaboration/operations-slack-thread.json", "20_audit/evidence-status.yaml"],
+            },
+            {
+                "id": "calculate_standard_processing_days",
+                "field": "standard_processing_business_days",
+                "description": "Divide the supported-record count from the control join by the standard-queue capacity and round up.",
+                "sources": ["changes.json control join", "19_controls/current-authority.md"],
+            },
+            {
+                "id": "calculate_recommended_outcome",
+                "field": "recommended_outcome_date",
+                "description": "Advance the as-of date by the processing days across the business-day calendar.",
+                "sources": ["as_of", "operations calendar"],
+            },
+            {
+                "id": "calculate_expedite_alternative",
+                "field": f"options.{expedite_id}.outcome",
+                "description": "Date the expedited exception queue from its capacity and cost it at the documented per-record fee.",
+                "sources": ["19_controls/current-authority.md", "16_approvals/drive-approval-record.json"],
+            },
+            {
+                "id": "calculate_hold_alternative",
+                "field": f"options.{hold_id}.outcome",
+                "description": "Start the full re-review at the next register refresh and cost all 16 keys at the re-review rate.",
+                "sources": ["15_collaboration/revenue-slack-thread.json", "20_audit/evidence-status.yaml"],
+            },
+            {
+                "id": "apply_escalation_authority",
+                "field": f"options.{expedite_id}.approval",
+                "description": "Recognize that expedite fees sit outside the requester's delegated authority.",
+                "sources": ["16_approvals/drive-approval-record.json", "19_controls/current-authority.md"],
+            },
+            {
+                "id": "calculate_outcome_variance",
+                "field": "outcome_vs_control_days",
+                "description": "Compare the recommended outcome with the review meeting into a signed calendar-day variance.",
+                "sources": ["recommended_outcome_date", "business_need_date"],
+            },
+            {
+                "id": "state_honest_timing_status",
+                "field": "decision_timing_status",
+                "description": "Report ON_TIME or LATE; never relabel a late but authorized result as on time.",
+                "sources": ["outcome_vs_control_days"],
+            },
+        ],
         "state_transition": (
             "Write only the task-scoped provider object, immutable record ID, and authorized field/value "
             "for each supported row, exactly once. Every held row, neighboring record, Gong object, and "
@@ -3033,34 +3554,173 @@ def rubric_narrative(spec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
-    """Describe stable business milestones while atomic checks remain executable."""
+def rubric_milestones(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Describe the weighted business milestones the atomic criteria roll into."""
 
     selected = spec["expected_decision_summary"]["selected_option_id"]
     method = spec["expected_decision_summary"]["method"]
+    model = spec["expected_decision_model"]
     systems = ", ".join(sorted({change["system"] for change in spec["expected_changes"]}))
     rows = [
         ("investigation.scope", "investigation", 5, f"Establish {spec['task_id']} as of {spec['as_of']}, inventory the released evidence room, and identify the live Salesforce and HubSpot object contracts without crossing into neighboring portfolio records."),
-        ("investigation.evidence", "investigation", 9, f"Find and reconcile the {len(spec['required_document_paths'])} material identity, operating, authority, policy, and exception records inside the larger evidence room before relying on a recommendation."),
-        ("investigation.identity", "investigation", 7, "Resolve cross-system portfolio keys, account or deal associations, active ownership, and record identity through task-specific searches; valid query shapes and investigation order are open."),
+        ("investigation.evidence", "investigation", 8, f"Find and reconcile the {len(spec['required_document_paths'])} material identity, operating, authority, policy, calendar, and exception records inside the larger evidence room before relying on a recommendation."),
+        ("investigation.identity", "investigation", 6, "Resolve cross-system portfolio keys, account or deal associations, active ownership, and record identity through task-specific searches; valid query shapes and investigation order are open."),
         ("investigation.authority", "investigation", 7, f"Separate observations from authority under {method!r}, reject pending, conflicting, ambiguous, or superseded evidence, and preserve the supported owners and deadlines."),
-        ("investigation.provider_correlation", "investigation", 10, f"Correlate every proposed change against its immutable Salesforce, HubSpot, and permitted Gong evidence before mutating {systems}; do not infer live state from files alone."),
-        ("decision.portfolio", "decision", 10, f"Evaluate all three released approaches, choose {selected!r} from the joined evidence, and derive exactly {spec['expected_change_count']} actionable and {spec['expected_hold_count']} held portfolio rows."),
-        ("state.primary", "state", 16, f"Persist exactly the {spec['expected_change_count']} authorized CRM field transitions on their immutable record IDs, once each, with provider-critical values supported by the evidence."),
+        ("investigation.provider_correlation", "investigation", 9, f"Correlate every proposed change against its immutable Salesforce, HubSpot, and permitted Gong evidence before mutating {systems}; do not infer live state from files alone."),
+        ("decision.portfolio", "decision", 8, f"Evaluate all three released approaches, choose {selected!r} from the joined evidence, and derive exactly {spec['expected_change_count']} actionable and {spec['expected_hold_count']} held portfolio rows."),
+        ("decision.alternatives", "decision", 7, f"Date and cost every alternative from the {spec['expected_change_count']} supported records, the documented queue capacities, fees, blackout calendar, and refresh schedule; compare the recommended outcome with the {model['business_need_date']} review meeting into a signed variance and an honest ON_TIME/LATE status; keep the expedite fee unauthorized and the full hold as the inferior tradeoff."),
+        ("state.primary", "state", 15, f"Persist exactly the {spec['expected_change_count']} authorized CRM field transitions on their immutable record IDs, once each, with provider-critical values supported by the evidence."),
         ("verification.readback", "verification", 6, "After every CRM mutation, retrieve the same immutable record and observe the intended persisted field value rather than trusting the acknowledgement."),
         ("containment.scope", "containment", 8, f"Keep all {spec['expected_hold_count']} held rows, neighboring records, unrelated fields, and Gong state unchanged; complete without deletion or a forbidden claim."),
-        ("deliverable.decision_summary", "answer", 5, f"Produce a task-scoped decision summary with the exact selected option, method, alternatives, and actionable-versus-held counts for {spec['company']}."),
+        ("deliverable.decision_summary", "answer", 4, f"Produce a task-scoped decision summary with the exact selected option, method, alternatives, and actionable-versus-held counts for {spec['company']}."),
         ("deliverable.changes", "answer", 7, "Provide one auditable structured row per supported change, including immutable identity, before/after value, derivation inputs, sources, owner, and deadline."),
         ("deliverable.holds", "answer", 5, "Provide one auditable row per held case with its evidence-backed blocker, corroboration, owner, deadline, and required next step."),
-        ("deliverable.brief", "answer", 3, "Write a concise executive handoff that explains the decision, alternatives, authorized changes, unresolved holds, control confirmation, and next operating cadence."),
+        ("deliverable.brief", "answer", 3, "Write a concise executive handoff that explains the decision, the dated and costed alternatives, authorized changes, unresolved holds, control confirmation, and next operating cadence."),
         ("execution.delivery", "execution", 2, "Leave only changes.json and brief.md, write both through the filesystem MCP, and complete without a rejected state-changing call."),
     ]
-    if len(rows) != 14 or sum(row[2] for row in rows) != 100:
-        raise ValueError("semantic rubric must contain 14 milestones totaling 100 points")
+    if tuple(row[0] for row in rows) != MILESTONE_IDS or sum(row[2] for row in rows) != 100:
+        raise ValueError("semantic rubric must contain the published milestones totaling 100 points")
     return [
-        {"id": criterion_id, "category": category, "weight": weight, "description": description}
-        for criterion_id, category, weight, description in rows
+        {"id": milestone_id, "category": category, "weight": weight, "description": description}
+        for milestone_id, category, weight, description in rows
     ]
+
+
+def _criterion_description(spec: dict[str, Any], component: str, criterion_id: str) -> str:
+    """Explain one executable verifier criterion from immutable task facts."""
+
+    changes = {change["id"]: change for change in spec["expected_changes"]}
+    holds = {hold["id"]: hold for hold in spec["expected_holds"]}
+    model = spec["expected_decision_model"]
+    if component == "procedure":
+        return {
+            "filesystem_discovery_completed": "Inventory, search, and traverse the released evidence room.",
+            "custody_metadata_checked": f"Inspect custody metadata for the {len(spec['metadata_check_paths'])} designated source records.",
+            "salesforce_discovery_completed": "Identify the Salesforce user and inspect the relevant object contract.",
+            "hubspot_discovery_completed": "Inspect the HubSpot account, object schema, and pipelines or object listing.",
+            "material_evidence_read_in_full": f"Read all {len(spec['required_document_paths'])} material source records, including the review-date, capacity, fee, and calendar evidence, in full.",
+            "all_required_evidence_precedes_mutation": "Read the identity, operating, authority, policy, live-system index, exception, and calendar records before the first CRM mutation.",
+            "task_specific_investigation_completed": "Before changing CRM state, complete this task's distinct identity, association, owner, scope, and corroboration checks: " + "; ".join(spec["investigation_purposes"]) + ".",
+            "all_salesforce_evidence_queried": "Query the Salesforce record corresponding to every proposed portfolio correction.",
+            "all_hubspot_evidence_retrieved": "Retrieve the HubSpot record corresponding to every proposed portfolio correction.",
+            "all_gong_evidence_queried": "Use the permitted Gong insight for every proposed portfolio correction.",
+            "all_provider_evidence_precedes_mutation": "For each changed record, inspect its live Salesforce, HubSpot, and permitted Gong evidence before changing that record.",
+            "all_mutations_verified_by_readback": "After every CRM mutation, retrieve that exact immutable record again and observe the derived field at its intended value.",
+            "exact_deliverable_set": "Leave only changes.json and brief.md in the output workspace.",
+            "deliverables_written_through_mcp": "Create both final deliverables through the filesystem MCP surface.",
+            "no_rejected_mutation": "Complete the work without a rejected state-changing call.",
+        }[criterion_id]
+    if component == "state":
+        if criterion_id == "entire_business_state_exact":
+            return f"All {spec['expected_change_count']} supported changes land and every held or neighboring record remains byte-for-byte unchanged."
+        if criterion_id == "no_delete_tool_succeeded":
+            return "Complete the work without deleting any CRM record."
+        if criterion_id == "gong_remained_read_only":
+            return "Keep Gong read-only throughout the workflow."
+        change_id, suffix = criterion_id.rsplit(".", 1)
+        change = changes[change_id]
+        target = f"{change['system']} {change['object_type']} {change['record_id']} field {change['field']}"
+        return {
+            "initial_value": f"Confirm {target} began as {change['before']!r}.",
+            "target_value": f"Leave {target} at the supported value {change['after']!r}.",
+            "authorized_fields": f"Change only the provider fields authorized for {change_id} on {change['record_id']}.",
+            "exactly_one_authorized_call": f"Apply the authorized {change['tool']} mutation for {change_id} exactly once.",
+            "postwrite_readback": f"Read {target} after the mutation and verify the observed value is {change['after']!r}.",
+        }[suffix]
+    if component == "changes":
+        if criterion_id == "changes_is_object":
+            return "Produce changes.json as a JSON object."
+        if criterion_id == "changes_exact_count":
+            return f"Record exactly {spec['expected_change_count']} supported changes in changes.json."
+        if criterion_id == "change_ids_unique":
+            return "Use every authorized change ID once and only once."
+        if criterion_id == "holds_exact_count":
+            return f"Report exactly {spec['expected_hold_count']} unresolved portfolio records without mutating them."
+        if criterion_id == "hold_ids_unique":
+            return "Use every held-case ID once and only once."
+        if criterion_id.startswith("top_level."):
+            return f"Set changes.json top-level {criterion_id.split('.', 1)[1]} to this task's exact released value."
+        if criterion_id.startswith("decision_summary."):
+            key = criterion_id.split(".", 1)[1]
+            return f"Report the derived decision summary field {key} as {spec['expected_decision_summary'][key]!r} after evaluating all three approaches."
+        if criterion_id.startswith("decision_model."):
+            path = criterion_id.split(".", 1)[1]
+            option_descriptions = {
+                "outcome": "the ISO date on which its full scope is executed and read back across the business-day calendar",
+                "incremental_cost": "its whole-USD incremental cost relative to the standard queue",
+                "approval": "its authority status (APPROVED, ADDITIONAL_APPROVAL_REQUIRED, or AVAILABLE_NOT_RECOMMENDED)",
+                "control_status": "its control status",
+                "outcome_vs_control_days": "its signed calendar-day variance against the documented review meeting",
+                "timing_status": "its honest ON_TIME or LATE status against the review meeting",
+            }
+            if path.startswith("options."):
+                option_id, field = path[len("options."):].rsplit(".", 1)
+                return f"Grade alternative {option_id}: report {option_descriptions[field]} exactly as derived from the evidence room."
+            return {
+                "business_need_date": f"Report the review meeting date {model['business_need_date']} documented in the review request and the approval record, not inferred from the request title.",
+                "standard_queue_records_per_business_day": "Report the current standard-queue capacity from the current authority register and operations thread, not the retired figure.",
+                "expedited_queue_records_per_business_day": "Report the expedited exception-queue capacity from the current authority register.",
+                "expedite_fee_usd_per_record": "Report the current expedite fee from the approval record and the current authority register.",
+                "rereview_cost_usd_per_record": "Report the current re-review charge from the revenue thread and the current authority register.",
+                "operations_blackout_dates": "List the published operations blackout dates that the projection must skip.",
+                "next_full_register_refresh": "Report the next full register refresh date from the revenue thread and the audit evidence.",
+                "standard_processing_business_days": f"Derive {model['standard_processing_business_days']} processing day(s) by dividing the supported-record count by the standard-queue capacity and rounding up.",
+                "recommended_outcome_date": f"Derive the recommended outcome date {model['recommended_outcome_date']} by advancing the as-of date across Monday-to-Friday processing days and skipping the blackout.",
+                "recommended_incremental_cost_usd": "Report the recommended option's incremental cost (USD 0 for the standard queue).",
+                "outcome_vs_control_days": f"Report the signed variance {model['outcome_vs_control_days']:+d} day(s) between the recommended outcome and the review meeting.",
+                "decision_timing_status": f"Report {model['decision_timing_status']} honestly; never relabel a late authorized result as on time.",
+                "expedite_days_saved": "Report how many calendar days the expedited queue would save, without executing it.",
+                "escalation_recommended": "Recommend escalation to Finance Deal Desk only when the recommended outcome lands after the review meeting.",
+            }[path]
+        prefix, field = criterion_id.rsplit(".", 1)
+        if prefix in changes:
+            change = changes[prefix]
+            if field == "present":
+                return f"Include an auditable row for {prefix} ({change['portfolio_key']})."
+            return f"Ground {prefix}'s {field} in the released record for {change['record_id']} and its controlling sources."
+        hold = holds[prefix]
+        if field == "present":
+            return f"Identify {hold['portfolio_key']} as held because of {hold['blocking_condition']}."
+        return f"Ground held-case {prefix}'s {field} in its exception and corroborating source."
+    if component == "brief":
+        if criterion_id.startswith("section."):
+            return f"Include the {criterion_id.split('.', 1)[1]!r} decision section in brief.md."
+        if criterion_id.startswith("change."):
+            change = changes[criterion_id.split(".", 1)[1]]
+            return f"Explain {change['id']} with portfolio key {change['portfolio_key']}, record {change['record_id']}, field transition {change['before']!r} to {change['after']!r}, both source paths, owner, and deadline."
+        if criterion_id.startswith("hold."):
+            hold = holds[criterion_id.split(".", 1)[1]]
+            return f"Explain why {hold['portfolio_key']} stayed unchanged, cite both sources, and state its owner, deadline, and next step."
+        return {
+            "decision_and_alternatives": "Name the selected evidence-backed option, the rejected alternatives, and the derivation method.",
+            "alternatives_costed_and_dated": f"State the {model['business_need_date']} review meeting, every alternative's outcome date, incremental cost as 'USD <amount>', and approval status, and the recommended option's ON_TIME/LATE status.",
+            "forbidden_claims_absent": "Make no forbidden claim about Gong mutation, private transcripts, blanket approval, invented amounts, or deleted controls.",
+        }[criterion_id]
+    raise ValueError(f"unknown verifier component: {component}")
+
+
+def rubric_criteria(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """Publish every executable criterion together with the milestone it rolls into.
+
+    The list is derived from the verifier's own criterion catalog, so the
+    released rubric and the executed report agree criterion for criterion.
+    """
+
+    rows = [
+        {
+            "id": f"{component}.{criterion_id}",
+            "category": component,
+            "milestone": milestone_for(component, criterion_id),
+            "description": _criterion_description(spec, component, criterion_id),
+        }
+        for component, criterion_id in criterion_catalog(spec)
+    ]
+    if len({row["id"] for row in rows}) != len(rows):
+        raise ValueError("atomic criterion ids must be unique")
+    milestones = {row["milestone"] for row in rows}
+    if milestones != set(MILESTONE_IDS):
+        raise ValueError(f"every milestone needs atomic evidence: {set(MILESTONE_IDS) - milestones}")
+    return rows
 
 
 def build_prompt(
@@ -3132,8 +3792,9 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
     task_id = task_id_for(task_number, spine.slug)
     entities = build_entities(spine, task_number)
     changes = build_changes(spine, task_number, entities)
+    calendar = decision_calendar(spine, task_number)
     documents, paths_by_key = build_documents(
-        spine, task_id, task_number, entities, changes
+        spine, task_id, task_number, entities, changes, calendar
     )
     entity_by_key = {entity["portfolio_key"]: entity for entity in entities}
     action_spec = ACTION_SPECS[spine.slug]
@@ -3204,8 +3865,10 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
             break
         if path not in metadata_check_paths:
             metadata_check_paths.append(path)
+    model = decision_model(spine, task_number, changes, holds, calendar)
+    options = _decision_options(spine, task_number, changes, holds, model)
     changes_payload, brief_text = _reference_outputs(
-        task_id, spine, task_number, changes, holds
+        task_id, spine, task_number, changes, holds, model
     )
     changes_text = json.dumps(changes_payload, ensure_ascii=False, indent=2) + "\n"
     calls.extend(
@@ -3274,9 +3937,13 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         ],
         "expected_change_count": len(changes),
         "expected_decision_summary": changes_payload["decision_summary"],
+        "expected_decision_model": changes_payload["decision_model"],
+        "decision_calendar": {
+            key: value for key, value in calendar.items() if key != "retired"
+        },
         "expected_holds": holds,
         "expected_hold_count": len(holds),
-        "decision_options": _decision_options(spine, task_number, len(changes)),
+        "decision_options": options,
         "verify_token_sha256": sha256_text(verification_token(task_id)),
         "contract_pins": CONTRACT_PINS,
         "forbidden_claims": [
@@ -3293,6 +3960,7 @@ def generate_task(spine: TaskSpine, task_number: int) -> GeneratedTask:
         "initial_state_sha256": sha256_text(canonical_json(seed)),
     }
     spec["rubric_narrative"] = rubric_narrative(spec)
+    spec["rubric_milestones"] = rubric_milestones(spec)
     spec["rubric_criteria"] = rubric_criteria(spec)
     prompt = build_prompt(spine, task_id, task_number, documents)
     reference = {
