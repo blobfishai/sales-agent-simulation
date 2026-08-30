@@ -20,6 +20,7 @@ from salesbench.builder import (
     world_dockerfile,
 )
 from salesbench.catalog import FAMILY_SETTINGS, TASK_SPINES
+from salesbench.action_specs import AUTHORITATIVE_SYSTEMS
 from salesbench.decision_specs import DECISION_RULES
 from salesbench.generation import (
     DECISION_CALENDAR_SOURCES,
@@ -31,8 +32,10 @@ from salesbench.generation import (
     MIN_TARGET_CHANGE_COUNT,
     FIXED_XLSX_ZIP_TIMESTAMP,
     PORTFOLIO_ENTITY_COUNT,
+    RELEASE_VERSION,
     business_days_after,
     generate_all,
+    governed_policy,
 )
 from salesbench.runtime.scoring import MILESTONE_IDS
 
@@ -139,6 +142,34 @@ class CatalogGenerationTests(unittest.TestCase):
                     re.IGNORECASE | re.MULTILINE,
                 )
             )
+
+    def test_authored_system_of_record_changes_the_executable_workflow(self) -> None:
+        tasks_by_slug = {task.spec["slug"]: task for task in self.tasks}
+        self.assertEqual(set(AUTHORITATIVE_SYSTEMS), set(AUTHORITATIVE_SYSTEMS) & set(tasks_by_slug))
+        for slug, system in AUTHORITATIVE_SYSTEMS.items():
+            task = tasks_by_slug[slug]
+            with self.subTest(slug=slug):
+                self.assertEqual(
+                    {change["system"] for change in task.spec["expected_changes"]},
+                    {system},
+                )
+                policy = governed_policy(
+                    next(spine for spine in TASK_SPINES if spine.slug == slug)
+                )
+                self.assertEqual(policy["system_of_record"], system)
+                self.assertEqual(
+                    {action["system"] for action in policy["actions_when_all_conditions_pass"]},
+                    {system},
+                )
+                # Both CRMs must still be investigated; system-of-record policy
+                # narrows writes, not the cross-system evidence join.
+                self.assertTrue(
+                    {"salesforce", "hubspot"}
+                    <= {
+                        call["server"]
+                        for call in task.reference["calls"]
+                    }
+                )
 
     def test_semantic_action_graphs_are_unique_not_just_read_order(self) -> None:
         def node(call: dict) -> tuple:
@@ -617,7 +648,7 @@ class CatalogGenerationTests(unittest.TestCase):
     def test_built_hugging_face_jsonl_contains_one_object_per_task(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             output = Path(raw) / "salesbench-100"
-            build(output)
+            report = build(output)
             rows = [
                 json.loads(line)
                 for line in (output / "huggingface" / "data" / "tasks.jsonl")
@@ -627,6 +658,10 @@ class CatalogGenerationTests(unittest.TestCase):
             ]
             copied_reports = {
                 path.name
+                for path in (output / "reports").glob("*.json")
+            }
+            copied_report_values = {
+                path.name: json.loads(path.read_text())
                 for path in (output / "reports").glob("*.json")
             }
             copied_runtime_residue = [
@@ -641,6 +676,7 @@ class CatalogGenerationTests(unittest.TestCase):
                 )
             ]
         self.assertEqual(len(rows), 100)
+        self.assertEqual(0, report["structural_clone_gate"]["pair_count"])
         self.assertTrue(all(isinstance(row, dict) for row in rows))
         self.assertEqual(len({row["task_id"] for row in rows}), 100)
         self.assertTrue(
@@ -673,7 +709,14 @@ class CatalogGenerationTests(unittest.TestCase):
                 for row in rows
             )
         )
-        self.assertIn("conformance.json", copied_reports)
+        # A version bump must not make the builder smuggle the prior release's
+        # conformance receipt into a new payload.  The receipt is optional until
+        # the live check is rerun, but any copied receipt must match this build.
+        if "conformance.json" in copied_reports:
+            self.assertEqual(
+                RELEASE_VERSION,
+                copied_report_values["conformance.json"]["benchmark_version"],
+            )
         self.assertNotIn("harbor-registry-qualification.json", copied_reports)
         self.assertNotIn("model-evaluation.json", copied_reports)
         self.assertEqual(copied_runtime_residue, [])

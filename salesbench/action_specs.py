@@ -172,6 +172,28 @@ ACTION_SPECS: dict[str, ActionSpec] = {
 }
 
 
+# The live source-of-truth is not interchangeable across employee jobs.  Most
+# portfolios contain a row-level crosswalk that can legitimately route a write
+# to either CRM.  These authored exceptions model workflows where policy names
+# one system as authoritative for every supported row.  Apart from being more
+# faithful to the job, this prevents two unrelated tasks from collapsing into
+# the same alternating Salesforce/HubSpot mutation recipe.
+AUTHORITATIVE_SYSTEMS: dict[str, str] = {
+    "northwind-q3-commit": "salesforce",
+    "solstice-fiscal-boundary": "hubspot",
+    "lattice-partner-overlay": "salesforce",
+    "meridian-usage-expansion": "hubspot",
+    "keystone-discovery-actions": "hubspot",
+    "orbit-objection-coding": "salesforce",
+    "yellowbrick-lifecycle-sync": "hubspot",
+    "brookfield-consent-survival": "salesforce",
+    "highland-public-sector": "salesforce",
+    "ion-health-system": "hubspot",
+    "kinetic-partner-sourced": "salesforce",
+    "eucalyptus-frequency-cap": "hubspot",
+}
+
+
 VALID_VALUE_KINDS = {"static", "date", "amount", "owner", "risk", "signal", "role", "cross_id", "account"}
 
 
@@ -183,7 +205,13 @@ def validate_action_specs(slugs: set[str]) -> None:
         for slug, spec in ACTION_SPECS.items()
         if spec.value_kind not in VALID_VALUE_KINDS
     }
-    if missing or extra or invalid:
+    invalid_authority = {
+        slug: system
+        for slug, system in AUTHORITATIVE_SYSTEMS.items()
+        if slug not in slugs or system not in {"salesforce", "hubspot"}
+    }
+    if missing or extra or invalid or invalid_authority:
         raise ValueError(
-            f"invalid action specs: missing={sorted(missing)}, extra={sorted(extra)}, invalid={invalid}"
+            f"invalid action specs: missing={sorted(missing)}, extra={sorted(extra)}, "
+            f"invalid={invalid}, invalid_authority={invalid_authority}"
         )

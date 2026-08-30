@@ -44,6 +44,8 @@ from .generation import (
 
 RELEASE_NAME = "SalesBench-100"
 RELEASE_SLUG = "salesbench-100"
+STRUCTURAL_CLONE_RAW_THRESHOLD = 0.90
+STRUCTURAL_CLONE_SEMANTIC_THRESHOLD = 0.70
 HARBOR_ORG = "blobfishai"
 HF_ORG = "SamuelChien821"
 DATA_LICENSE = "CC-BY-4.0"
@@ -599,6 +601,49 @@ def maximum_sequence_similarity(values: list[tuple[str, ...]]) -> dict[str, Any]
     return {"maximum_sequence_match": round(maximum, 6), "pair_indices": pair}
 
 
+def structural_clone_pairs(
+    task_ids: list[str],
+    reference_sequences: list[tuple[str, ...]],
+    semantic_sequences: list[tuple[str, ...]],
+) -> list[dict[str, Any]]:
+    """Reject the same employee job disguised with different record identities."""
+
+    pairs: list[dict[str, Any]] = []
+    for left in range(len(task_ids)):
+        for right in range(left + 1, len(task_ids)):
+            raw = SequenceMatcher(
+                a=reference_sequences[left],
+                b=reference_sequences[right],
+                autojunk=False,
+            ).ratio()
+            semantic = SequenceMatcher(
+                a=semantic_sequences[left],
+                b=semantic_sequences[right],
+                autojunk=False,
+            ).ratio()
+            if (
+                raw > STRUCTURAL_CLONE_RAW_THRESHOLD
+                and semantic > STRUCTURAL_CLONE_SEMANTIC_THRESHOLD
+            ):
+                pairs.append(
+                    {
+                        "left": task_ids[left],
+                        "right": task_ids[right],
+                        "raw_sequence_similarity": round(raw, 6),
+                        "identifier_neutral_semantic_similarity": round(semantic, 6),
+                    }
+                )
+    return sorted(
+        pairs,
+        key=lambda pair: (
+            -pair["raw_sequence_similarity"],
+            -pair["identifier_neutral_semantic_similarity"],
+            pair["left"],
+            pair["right"],
+        ),
+    )
+
+
 def semantic_action_signature(task: GeneratedTask) -> str:
     """Hash provider objects and governed fields, excluding IDs and read order."""
 
@@ -821,6 +866,9 @@ def _validate_report(report: dict[str, Any]) -> None:
         "unique_semantic_action_graphs": report["unique_semantic_action_graphs"] == 100,
         "semantic_sequence_similarity": (
             report["semantic_sequence_similarity"]["maximum_sequence_match"] < 0.85
+        ),
+        "no_structural_template_clones": (
+            report["structural_clone_gate"]["pair_count"] == 0
         ),
         "evidence_role_coverage": report["causal_evidence"]["every_task_has_one_of_each_role_per_portfolio_key"],
         "no_precomputed_answer_keys": not report["causal_evidence"]["precomputed_answer_hits"],
@@ -1193,6 +1241,9 @@ def build(output: Path) -> dict[str, Any]:
 
     family_counts = Counter(task.spine.family for task in tasks)
     sorted_sizes = sorted(document_sizes)
+    clone_pairs = structural_clone_pairs(
+        [task.task_id for task in tasks], reference_sequences, semantic_sequences
+    )
     report = {
         "schema_version": "salesbench.build.v1",
         "benchmark": RELEASE_NAME,
@@ -1224,6 +1275,14 @@ def build(output: Path) -> dict[str, Any]:
         "unique_semantic_action_graphs": len(set(semantic_signatures)),
         "reference_sequence_similarity": maximum_sequence_similarity(reference_sequences),
         "semantic_sequence_similarity": maximum_sequence_similarity(semantic_sequences),
+        "structural_clone_gate": {
+            "raw_sequence_threshold": STRUCTURAL_CLONE_RAW_THRESHOLD,
+            "identifier_neutral_semantic_threshold": (
+                STRUCTURAL_CLONE_SEMANTIC_THRESHOLD
+            ),
+            "pair_count": len(clone_pairs),
+            "pairs": clone_pairs,
+        },
         "required_mcp_servers": sorted(servers),
         "tool_counts_by_server": {server: len(tools) for server, tools in TOOLS_BY_SERVER.items()},
         "prompt_uniqueness": maximum_pair_similarity(prompts),

@@ -16,14 +16,19 @@ from datetime import date, timedelta
 from pathlib import PurePosixPath
 from typing import Any
 
-from .action_specs import ACTION_SPECS, ActionSpec, validate_action_specs
+from .action_specs import (
+    ACTION_SPECS,
+    AUTHORITATIVE_SYSTEMS,
+    ActionSpec,
+    validate_action_specs,
+)
 from .catalog import FAMILY_SETTINGS, TASK_SPINES, TaskSpine
 from .contracts import CONTRACT_PINS
 from .decision_specs import DECISION_RULES, validate_decision_rules
 from .runtime.scoring import MILESTONE_IDS, criterion_catalog, milestone_for
 
 
-RELEASE_VERSION = "3.4.1"
+RELEASE_VERSION = "3.4.2"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
 FIXED_XLSX_ZIP_TIMESTAMP = (2026, 8, 26, 12, 0, 0)
 DOCUMENT_COUNT = 28
@@ -1273,6 +1278,29 @@ def governed_policy(spine: TaskSpine) -> dict[str, Any]:
         if spec.value_kind == "static"
         else derivation
     )
+    actions = [
+        {
+            "system": "salesforce",
+            "object_type": spec.salesforce_object,
+            "field": spec.salesforce_field,
+            "from": spec.salesforce_before,
+            "to_or_derivation": salesforce_result,
+        },
+        {
+            "system": "hubspot",
+            "object_type": spec.hubspot_object,
+            "field": spec.hubspot_field,
+            "from": spec.hubspot_before,
+            "to_or_derivation": hubspot_result,
+        },
+    ]
+    authoritative_system = AUTHORITATIVE_SYSTEMS.get(spine.slug)
+    if authoritative_system is not None:
+        actions = [
+            action
+            for action in actions
+            if action["system"] == authoritative_system
+        ]
     return {
         "workflow": spine.family,
         "effective_period": spine.period,
@@ -1283,25 +1311,16 @@ def governed_policy(spine: TaskSpine) -> dict[str, Any]:
             "live_systems": "current records agree with the crosswalk and observation",
             "exception_register": "no unresolved blocking exception",
         },
-        "actions_when_all_conditions_pass": [
-            {
-                "system": "salesforce",
-                "object_type": spec.salesforce_object,
-                "field": spec.salesforce_field,
-                "from": spec.salesforce_before,
-                "to_or_derivation": salesforce_result,
-            },
-            {
-                "system": "hubspot",
-                "object_type": spec.hubspot_object,
-                "field": spec.hubspot_field,
-                "from": spec.hubspot_before,
-                "to_or_derivation": hubspot_result,
-            },
-        ],
+        "system_of_record": authoritative_system or "per-row crosswalk",
+        "actions_when_all_conditions_pass": actions,
         "selection_rule": (
-            "Use the identity crosswalk and current provider state to choose the system row; "
-            "the policy does not identify an actionable portfolio record by itself."
+            (
+                f"Write only the {authoritative_system} row named by this effective policy; "
+                "use the other CRM and Gong only to corroborate identity and current state. "
+                if authoritative_system is not None
+                else "Use the identity crosswalk and current provider state to choose the system row; "
+            )
+            + "the policy does not identify an actionable portfolio record by itself."
         ),
         "candidate_approaches": _candidate_options(spine),
     }
@@ -1663,10 +1682,18 @@ def build_changes(
     action_spec = ACTION_SPECS[spine.slug]
     changes: list[dict[str, Any]] = []
     for sequence, entity in enumerate(targets, start=1):
-        # The authoritative CRM follows the entity-level crosswalk rather than
-        # an artificial quota. This lets each portfolio's evidence determine
-        # both the Salesforce/HubSpot action mix and the amount of work.
-        alternate = entity["slot"] % 2 == 1
+        # The authoritative CRM usually follows the entity-level crosswalk.
+        # Some employee jobs have an explicit system-of-record policy, in which
+        # case every supported row must be written only there even though both
+        # CRMs remain part of the investigation.
+        authoritative_system = AUTHORITATIVE_SYSTEMS.get(spine.slug)
+        alternate = (
+            authoritative_system == "hubspot"
+            or (
+                authoritative_system is None
+                and entity["slot"] % 2 == 1
+            )
+        )
         reason = (
             f"{entity['portfolio_key']} qualifies for {FAMILY_SETTINGS[spine.family]['mutation']} "
             f"because {entity['signal']}; apply {entity['risk_code']} under the current {spine.period} policy."
