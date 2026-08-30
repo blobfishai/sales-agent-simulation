@@ -72,6 +72,32 @@ class WorldTests(unittest.TestCase):
             executed, {row["id"] for row in self.task.spec["rubric_criteria"]}
         )
 
+    def test_keyword_stuffing_cannot_replace_a_human_brief(self) -> None:
+        world = self.world("keyword-stuffing")
+        replaced = False
+        for call in self.task.reference["calls"]:
+            arguments = call["arguments"]
+            if (
+                call["server"] == "filesystem"
+                and call["name"] == "write_file"
+                and arguments["path"].endswith("brief.md")
+            ):
+                arguments = {
+                    **arguments,
+                    "content": " ".join(arguments["content"].split()),
+                }
+                replaced = True
+            result = world.call_tool(call["server"], call["name"], arguments)
+            self.assertFalse(result["isError"])
+        self.assertTrue(replaced)
+        report = world.verify(verification_token(self.task.task_id))
+        criteria = report["criteria"]["brief"]["criteria"]
+        self.assertFalse(report["passed"])
+        self.assertFalse(criteria["natural_narrative"])
+        self.assertTrue(
+            all(passed for name, passed in criteria.items() if name != "natural_narrative")
+        )
+
     def _run_with_changes(self, suffix: str, mutate) -> dict:
         world = self.world(suffix)
         for call in self.task.reference["calls"]:

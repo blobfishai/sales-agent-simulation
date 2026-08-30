@@ -31,7 +31,7 @@ from salesbench.runtime.world import SalesWorld  # noqa: E402
 try:  # The public runtime bundle intentionally omits the generator package.
     from salesbench.generation import RELEASE_VERSION  # noqa: E402
 except ImportError:  # pragma: no cover - exercised from the packaged HF world
-    RELEASE_VERSION = "3.4.0"
+    RELEASE_VERSION = "3.4.1"
 
 
 def tls_context() -> ssl.SSLContext:

@@ -750,7 +750,7 @@ configs:
 | Same-record post-write readback per mutation | required |
 | Verifier network/model/clock/random calls | 0 |
 | Oracle and replay passes | 100/100 each |
-| False accepts across eleven negative controls | 0 |
+| False accepts across thirteen negative controls | 0 |
 | Reward for the pristine no-op control | exactly 0.0 |
 
 Measured results live in `reports/qualification.json`. Reference traces are implementation proofs, not model scores.

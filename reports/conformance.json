@@ -1,5 +1,5 @@
 {
-  "benchmark_version": "3.4.0",
+  "benchmark_version": "3.4.1",
   "claims": {
     "authenticated_hosted_tools_list_compared": false,
     "filesystem_exact_tools_list_subset": true,
