@@ -23,7 +23,7 @@ from .decision_specs import DECISION_RULES, validate_decision_rules
 from .runtime.scoring import MILESTONE_IDS, criterion_catalog, milestone_for
 
 
-RELEASE_VERSION = "3.4.0"
+RELEASE_VERSION = "3.4.1"
 FIXED_FILE_TIMESTAMP = "2026-08-26T12:00:00.000Z"
 FIXED_XLSX_ZIP_TIMESTAMP = (2026, 8, 26, 12, 0, 0)
 DOCUMENT_COUNT = 28
@@ -3692,6 +3692,7 @@ def _criterion_description(spec: dict[str, Any], component: str, criterion_id: s
             hold = holds[criterion_id.split(".", 1)[1]]
             return f"Explain why {hold['portfolio_key']} stayed unchanged, cite both sources, and state its owner, deadline, and next step."
         return {
+            "natural_narrative": "Write a multi-paragraph human decision brief that connects the evidence, changes, holds, alternatives, and conclusion; an anchor list or serialized object is not a brief.",
             "decision_and_alternatives": "Name the selected evidence-backed option, the rejected alternatives, and the derivation method.",
             "alternatives_costed_and_dated": f"State the {model['business_need_date']} review meeting, every alternative's outcome date, incremental cost as 'USD <amount>', and approval status, and the recommended option's ON_TIME/LATE status.",
             "forbidden_claims_absent": "Make no forbidden claim about Gong mutation, private transcripts, blanket approval, invented amounts, or deleted controls.",

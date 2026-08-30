@@ -32,7 +32,7 @@ The release target is deliberately strict:
   semantic milestones it rolls into.
 - 75–114 successful MCP calls per accepted trajectory, with 5–12 evidence-derived
   mutations and an exact readback after each mutation.
-- 1,300 local qualification executions: oracle, exact replay, and eleven adversarial
+- 1,500 local qualification executions: oracle, exact replay, and thirteen adversarial
   controls for every task. Model scores remain withheld until an exact-version run exists.
 - Public GitHub, Harbor, Hugging Face, and Blobfish benchmark-page releases.
 

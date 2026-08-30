@@ -375,7 +375,16 @@ def score_changes(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
 def score_brief(value: Any, spec: dict[str, Any]) -> dict[str, Any]:
     brief = value if isinstance(value, str) else ""
     normalized = normalize(brief)
-    criteria: dict[str, bool] = {}
+    words = re.findall(r"[a-z0-9]+", normalized)
+    paragraphs = [row for row in re.split(r"\n\s*\n", brief) if row.strip()]
+    criteria: dict[str, bool] = {
+        "natural_narrative": (
+            len(words) >= 80
+            and len(paragraphs) >= 4
+            and sum(brief.count(mark) for mark in (".", ";", ":")) >= 5
+            and not brief.lstrip().startswith(("{", "["))
+        )
+    }
     for section in spec["brief_sections"]:
         criteria[f"section.{section}"] = normalize(section) in normalized
     details: list[dict[str, Any]] = []
@@ -627,6 +636,7 @@ def criterion_catalog(spec: dict[str, Any]) -> list[tuple[str, str]]:
         catalog.append(("changes", f"{hold['id']}.present"))
         catalog.extend(("changes", f"{hold['id']}.{field}") for field in HOLD_FIELDS)
     catalog.extend(("brief", f"section.{section}") for section in spec["brief_sections"])
+    catalog.append(("brief", "natural_narrative"))
     catalog.extend(("brief", f"change.{change['id']}") for change in spec["expected_changes"])
     catalog.append(("brief", "decision_and_alternatives"))
     catalog.append(("brief", "alternatives_costed_and_dated"))

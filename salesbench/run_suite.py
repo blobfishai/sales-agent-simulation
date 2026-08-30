@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute all SalesBench tasks against oracle, replay, and eleven negative controls."""
+"""Execute all SalesBench tasks against oracle, replay, and thirteen negative controls."""
 
 from __future__ import annotations
 
@@ -164,6 +164,30 @@ def unauthorized_delete(
         "deleteSobjectRecord",
         {"sobject-name": "Account", "id": control_account["Id"]},
     )
+
+
+def keyword_stuffing(
+    world: SalesWorld,
+    spec: dict[str, Any],
+    reference: dict[str, Any],
+) -> None:
+    """Supply every semantic anchor but collapse the brief into a token dump."""
+
+    del spec
+    stuffing = " ".join(reference["brief_text"].split())
+    replaced = False
+    for call in reference["calls"]:
+        arguments = deepcopy(call["arguments"])
+        if (
+            call["server"] == "filesystem"
+            and call["name"] == "write_file"
+            and arguments.get("path") == "/workspace/output/brief.md"
+        ):
+            arguments["content"] = stuffing
+            replaced = True
+        checked_call(world, call["server"], call["name"], arguments)
+    if not replaced:
+        raise RuntimeError("reference trajectory had no brief deliverable")
 
 
 def wrong_evidence(
@@ -382,6 +406,8 @@ def run(release: Path) -> dict[str, Any]:
         ("write_before_read", write_before_read),
         ("missing_readback", missing_readback),
         ("unauthorized_write", unauthorized_write),
+        ("wrong_target", unauthorized_delete),
+        ("keyword_stuffing", keyword_stuffing),
         ("wrong_evidence", wrong_evidence),
         ("wrong_value", wrong_value),
         ("wrong_decision", wrong_decision),
